@@ -4,15 +4,42 @@ import joblib
 import pandas as pd
 
 
-MODEL_PATH = Path(
-    "ml/models/exploitability_xgb.joblib"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+MODEL_PATH = (
+    PROJECT_ROOT
+    / "ml"
+    / "models"
+    / "exploitability_xgb.joblib"
 )
 
 
 class ExploitabilityModel:
 
-    def __init__(self):
-        artifact = joblib.load(MODEL_PATH)
+    def __init__(self, model_path: Path | None = None):
+
+        path = model_path or MODEL_PATH
+
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Exploitability model not found: {path}"
+            )
+
+        artifact = joblib.load(path)
+
+        required_keys = {
+            "model",
+            "imputer",
+            "features",
+        }
+
+        missing = required_keys - artifact.keys()
+
+        if missing:
+            raise ValueError(
+                f"Invalid exploitability model artifact. "
+                f"Missing keys: {sorted(missing)}"
+            )
 
         self.model = artifact["model"]
         self.imputer = artifact["imputer"]
