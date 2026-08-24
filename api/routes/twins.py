@@ -63,7 +63,7 @@ async def destroy_twin(
 
     service = TwinProvisioningService(db)
 
-    service.destroy(twin_id)
+    await service.destroy(twin_id)
 
     logger.info("Destroyed twin %s", twin_id)
 
