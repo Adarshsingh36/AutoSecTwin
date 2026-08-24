@@ -16,15 +16,32 @@ OUTPUT_PATH = Path(
 
 def load_nvd():
     print("Loading NVD...")
+
     df = pd.read_csv(NVD_PATH)
 
-    df["CVE_ID"] = df["CVE_ID"].str.upper().str.strip()
+    df["CVE_ID"] = (
+        df["CVE_ID"]
+        .astype(str)
+        .str.upper()
+        .str.strip()
+    )
+
+    df["PUBLISHED_DATE"] = pd.to_datetime(
+        df["PUBLISHED_DATE"],
+        errors="coerce"
+    )
+
+    df["LAST_MODIFIED"] = pd.to_datetime(
+        df["LAST_MODIFIED"],
+        errors="coerce"
+    )
 
     return df
 
 
 def load_epss():
     print("Loading EPSS...")
+
     df = pd.read_csv(
         EPSS_PATH,
         comment="#"
@@ -45,22 +62,32 @@ def load_epss():
         .str.strip()
     )
 
+    # EPSS file is a point-in-time snapshot.
+    # The date is stored separately so that the
+    # temporal nature of this intelligence is explicit.
+    df["EPSS_SNAPSHOT_DATE"] = pd.Timestamp(
+        "2026-08-12"
+    )
+
     return df[
         [
             "CVE_ID",
             "EPSS_SCORE",
             "EPSS_PERCENTILE",
+            "EPSS_SNAPSHOT_DATE",
         ]
     ]
 
 
 def load_kev():
     print("Loading CISA KEV...")
+
     df = pd.read_csv(KEV_PATH)
 
     df = df.rename(
         columns={
-            "cveID": "CVE_ID"
+            "cveID": "CVE_ID",
+            "dateAdded": "KEV_DATE_ADDED",
         }
     )
 
@@ -71,14 +98,20 @@ def load_kev():
         .str.strip()
     )
 
-    # Every CVE appearing in KEV is known to have
-    # real-world exploitation evidence.
+    df["KEV_DATE_ADDED"] = pd.to_datetime(
+        df["KEV_DATE_ADDED"],
+        errors="coerce"
+    )
+
+    # Presence in KEV means CISA has identified the
+    # vulnerability as known exploited.
     df["KEV_STATUS"] = 1
 
     return df[
         [
             "CVE_ID",
-            "KEV_STATUS"
+            "KEV_STATUS",
+            "KEV_DATE_ADDED",
         ]
     ].drop_duplicates("CVE_ID")
 
@@ -106,48 +139,56 @@ def load_exploitdb():
         low_memory=False
     )
 
+    df["date_published"] = pd.to_datetime(
+        df["date_published"],
+        errors="coerce"
+    )
+
     records = []
 
-    for codes in df["codes"]:
-        cves = extract_cves(codes)
+    for _, row in df.iterrows():
+
+        cves = extract_cves(row["codes"])
 
         for cve in cves:
-            records.append(cve)
+            records.append(
+                {
+                    "CVE_ID": cve,
+                    "EXPLOIT_DATE": row["date_published"],
+                }
+            )
 
-    exploit_cves = pd.Series(
-        records,
-        name="CVE_ID"
-    )
+    if not records:
+        return pd.DataFrame(
+            columns=[
+                "CVE_ID",
+                "EXPLOIT_COUNT",
+                "FIRST_EXPLOIT_DATE",
+                "LATEST_EXPLOIT_DATE",
+            ]
+        )
 
-    exploit_counts = (
-        exploit_cves
-        .value_counts()
-        .rename("EXPLOIT_COUNT")
-        .reset_index()
-    )
+    exploit_records = pd.DataFrame(records)
 
-    exploit_counts = exploit_counts.rename(
-        columns={
-            "index": "CVE_ID"
-        }
-    )
-
-    exploit_counts["CVE_ID"] = (
-        exploit_counts["CVE_ID"]
+    exploit_records["CVE_ID"] = (
+        exploit_records["CVE_ID"]
         .astype(str)
         .str.upper()
         .str.strip()
     )
 
-    exploit_counts["EXPLOIT_AVAILABLE"] = 1
+    exploit_counts = (
+        exploit_records
+        .groupby("CVE_ID")
+        .agg(
+            EXPLOIT_COUNT=("CVE_ID", "size"),
+            FIRST_EXPLOIT_DATE=("EXPLOIT_DATE", "min"),
+            LATEST_EXPLOIT_DATE=("EXPLOIT_DATE", "max"),
+        )
+        .reset_index()
+    )
 
-    return exploit_counts[
-        [
-            "CVE_ID",
-            "EXPLOIT_AVAILABLE",
-            "EXPLOIT_COUNT",
-        ]
-    ]
+    return exploit_counts
 
 
 def main():
@@ -166,8 +207,7 @@ def main():
     print()
     print("Merging datasets...")
 
-    # Start from NVD because it is our
-    # vulnerability universe.
+    # NVD remains the vulnerability universe.
     df = nvd.merge(
         epss,
         on="CVE_ID",
@@ -186,27 +226,43 @@ def main():
         how="left"
     )
 
-    # Missing KEV means the vulnerability
-    # is not currently listed in KEV.
+    # Missing KEV means the CVE is not present
+    # in the downloaded KEV snapshot.
     df["KEV_STATUS"] = (
         df["KEV_STATUS"]
         .fillna(0)
         .astype(int)
     )
 
-    # Missing ExploitDB evidence means
-    # no matching public exploit was found.
-    df["EXPLOIT_AVAILABLE"] = (
-        df["EXPLOIT_AVAILABLE"]
-        .fillna(0)
-        .astype(int)
-    )
-
+    # Missing ExploitDB evidence means no matching
+    # ExploitDB record was found.
     df["EXPLOIT_COUNT"] = (
         df["EXPLOIT_COUNT"]
         .fillna(0)
         .astype(int)
     )
+
+    # Derived convenience indicator.
+    # This is NOT treated as ground-truth exploitability.
+    df["EXPLOIT_AVAILABLE"] = (
+        df["EXPLOIT_COUNT"] > 0
+    ).astype(int)
+
+    # Explicitly calculate temporal relationships.
+    df["KEV_DAYS_AFTER_PUBLICATION"] = (
+        df["KEV_DATE_ADDED"] -
+        df["PUBLISHED_DATE"]
+    ).dt.total_seconds() / 86400
+
+    df["FIRST_EXPLOIT_DAYS_AFTER_PUBLICATION"] = (
+        df["FIRST_EXPLOIT_DATE"] -
+        df["PUBLISHED_DATE"]
+    ).dt.total_seconds() / 86400
+
+    df["LATEST_EXPLOIT_DAYS_AFTER_PUBLICATION"] = (
+        df["LATEST_EXPLOIT_DATE"] -
+        df["PUBLISHED_DATE"]
+    ).dt.total_seconds() / 86400
 
     OUTPUT_PATH.parent.mkdir(
         parents=True,
@@ -242,12 +298,18 @@ def main():
         int(df["EPSS_SCORE"].notna().sum())
     )
 
-    print()
+    print(
+        "KEV dates available:",
+        int(df["KEV_DATE_ADDED"].notna().sum())
+    )
 
     print(
-        "Saved:",
-        OUTPUT_PATH
+        "Exploit dates available:",
+        int(df["FIRST_EXPLOIT_DATE"].notna().sum())
     )
+
+    print()
+    print("Saved:", OUTPUT_PATH)
 
 
 if __name__ == "__main__":
