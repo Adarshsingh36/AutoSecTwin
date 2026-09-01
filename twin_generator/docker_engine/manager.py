@@ -89,6 +89,11 @@ class DockerTwinEngine:
                 self._client,
             image,
             )
+            if published_ports is None:
+                published_ports = {
+                    port: None
+                    for port in exposed_ports
+                }
             # 3 + 4 + 6 + 7: create container (assigns hostname, volumes,
             # published ports), attach to the isolated network (assigns IP),
             # then start it.
@@ -115,6 +120,16 @@ class DockerTwinEngine:
                 ip_address=ip_address,
                 healthy=healthy,
             )
+            actual_published_ports: Dict[int, Optional[int]] = {}
+
+            for port in exposed_ports:
+                bindings = container.attrs.get("NetworkSettings", {}).get("Ports", {}).get(
+                    f"{port}/tcp"
+                )
+                if bindings:
+                    actual_published_ports[port] = int(bindings[0]["HostPort"])
+                else:
+                    actual_published_ports[port] = None
 
             # 9. Return running container
             return DockerProvisionResult(
@@ -126,7 +141,7 @@ class DockerTwinEngine:
                 network_id=network_info.network_id,
                 ip_address=ip_address,
                 exposed_ports=exposed_ports,
-                published_ports=published_ports or {},
+                published_ports=actual_published_ports,
                 status=container.status,
                 healthy=healthy,
             )
