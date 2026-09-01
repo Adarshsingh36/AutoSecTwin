@@ -223,6 +223,52 @@ class MetasploitRPCClient:
                 token,
             ]
         )
+    
+    async def create_console(self) -> dict[str, Any]:
+        """Create a Metasploit console."""
+
+        token = self._token or await self.login()
+
+        return await self._call_raw(
+            [
+                "console.create",
+                token,
+            ]
+        )
+
+    async def read_console(
+        self,
+        console_id: str,
+    ) -> dict[str, Any]:
+        """Read output from a Metasploit console."""
+
+        token = self._token or await self.login()
+
+        return await self._call_raw(
+            [
+                "console.read",
+                token,
+                console_id,
+            ]
+        )
+
+    async def write_console(
+        self,
+        console_id: str,
+        command: str,
+    ) -> dict[str, Any]:
+        """Write a command to a Metasploit console."""
+
+        token = self._token or await self.login()
+
+        return await self._call_raw(
+            [
+                "console.write",
+                token,
+                console_id,
+                command,
+            ]
+        )
 
     @staticmethod
     def _decode_bytes(value: Any) -> Any:
