@@ -1,5 +1,4 @@
 import asyncio
-from xmlrpc import client
 
 from integrations.metasploit.rpc_client import MetasploitRPCClient
 
@@ -13,51 +12,66 @@ async def main():
 
     target = "192.168.56.103"
 
+    module_type = "exploit"
+    module_name = "windows/smb/ms17_010_eternalblue"
+
     options = {
         "RHOSTS": target,
         "RPORT": 445,
     }
 
+    print("\n=== MODULE CHECK SUBMISSION ===")
+
     result = await client.check_module(
-        module_type="exploit",
-        module_name="windows/smb/ms17_010_eternalblue",
+        module_type=module_type,
+        module_name=module_name,
         options=options,
     )
 
-    print("\n=== MODULE CHECK SUBMISSION ===")
     print("Target:", target)
-    print("Module:", "windows/smb/ms17_010_eternalblue")
+    print("Module:", module_name)
     print("Result:", result)
 
     job_id = result.get("job_id")
 
-    if job_id is not None:
-        print("\n=== JOB INFO ===")
+    if job_id is None:
+        print("\nNo job ID returned.")
+        return
 
-        job_info = await client.get_job_info(job_id)
+    print("\n=== JOB INFO ===")
 
-        print(job_info)
+    job_info = await client.get_job_info(job_id)
 
-        print("\n=== JOB LIST ===")
+    print(job_info)
 
-        jobs = await client.list_jobs()
+    print("\n=== JOB LIST ===")
 
-        print(jobs)
-        print("\n=== WAITING FOR JOB ===")
+    jobs = await client.list_jobs()
 
-        completion = await client.wait_for_job(
+    print(jobs)
+
+    print("\n=== WAITING FOR JOB ===")
+
+    completion = await client.wait_for_job(
         job_id=job_id,
         poll_interval=1.0,
         timeout=30.0,
-        )
+    )
 
-        print(completion)
+    print(completion)
 
-        print("\n=== FINAL JOB LIST ===")
+    print("\n=== FINAL JOB LIST ===")
 
-        final_jobs = await client.list_jobs()
+    final_jobs = await client.list_jobs()
 
-        print(final_jobs)
+    print(final_jobs)
+
+    if completion.get("completed"):
+        print("\n=== MODULE CHECK COMPLETED ===")
+        print("Check job completed successfully from the RPC perspective.")
+    else:
+        print("\n=== MODULE CHECK TIMEOUT ===")
+        print("The Metasploit check job did not finish within the timeout.")
 
 
 if __name__ == "__main__":
