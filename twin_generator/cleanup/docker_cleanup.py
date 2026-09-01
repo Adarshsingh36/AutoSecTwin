@@ -35,14 +35,26 @@ def remove_orphaned_stopped_containers(client: "DockerClient") -> int:
         all=True,
         filters={**TWIN_LABEL_FILTER, "status": ["exited", "dead"]},
     )
+
     removed = 0
+
     for container in containers:
         try:
-            client.containers.remove(container.id, force=True)
+            container.remove(force=True)
             removed += 1
-            logger.info("orphaned_container_removed", container_name=container.name)
+
+            logger.info(
+                "orphaned_container_removed",
+                container_name=container.name,
+            )
+
         except Exception as exc:  # pragma: no cover - best-effort cleanup
-            logger.warning("orphaned_container_removal_failed", container_name=container.name, error=str(exc))
+            logger.warning(
+                "orphaned_container_removal_failed",
+                container_name=container.name,
+                error=str(exc),
+            )
+
     return removed
 
 
