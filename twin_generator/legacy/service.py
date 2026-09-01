@@ -1,19 +1,14 @@
+
 """
 Legacy Profiler service.
 
 Compares a detected (software, version) pair against the local
-legacy_profiles End-of-Life reference table and classifies it as
-Legacy / Supported / Unknown.
-
-Per spec, this classification is metadata only: it flags legacy systems for
-downstream awareness (the Twin Orchestrator sets TwinInstance.legacy_flag
-from this result) but never blocks or delays twin creation itself.
+legacy_profiles End-of-Life reference table.
 """
 
 from __future__ import annotations
 
 from datetime import date
-from typing import Optional
 
 import structlog
 from sqlalchemy.orm import Session
@@ -34,7 +29,11 @@ class LegacyProfilerService:
         profile = self._repo.find(software, version)
 
         if profile is None:
-            logger.info("legacy_check_unknown", software=software, version=version)
+            logger.info(
+                "legacy_check_unknown",
+                software=software,
+                version=version,
+            )
             return LegacyCheckResponse(
                 software=software,
                 version=version,
@@ -44,6 +43,7 @@ class LegacyProfilerService:
             )
 
         classification = self._classify(profile)
+
         logger.info(
             "legacy_check_matched",
             software=software,
@@ -51,24 +51,36 @@ class LegacyProfilerService:
             classification=classification.value,
             profile_id=profile.id,
         )
+
         return LegacyCheckResponse(
             software=software,
             version=version,
             classification=classification,
-            eol_date=profile.eol_date,
+            eol_date=profile.eol,
             matched_profile_id=profile.id,
         )
 
     @staticmethod
     def _classify(profile: LegacyProfile) -> LegacyFlag:
-        # An explicit `supported` flag on the reference row is authoritative.
-        if profile.supported is True:
-            return LegacyFlag.SUPPORTED
-        if profile.supported is False:
+        """
+        Database representation:
+
+            unsupported=True  -> LEGACY
+            unsupported=False -> SUPPORTED
+            unsupported=None   -> use EOL date
+        """
+
+        if profile.unsupported is True:
             return LegacyFlag.LEGACY
 
-        # No explicit flag: fall back to comparing eol_date against today.
-        if profile.eol_date is not None:
-            return LegacyFlag.LEGACY if profile.eol_date < date.today() else LegacyFlag.SUPPORTED
+        if profile.unsupported is False:
+            return LegacyFlag.SUPPORTED
+
+        if profile.eol is not None:
+            return (
+                LegacyFlag.LEGACY
+                if profile.eol < date.today()
+                else LegacyFlag.SUPPORTED
+            )
 
         return LegacyFlag.UNKNOWN
