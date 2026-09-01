@@ -32,9 +32,9 @@ def test_check_returns_legacy_for_seeded_eol_software(
 ) -> None:
     session.add(
         LegacyProfile(
-            software="Windows Server",
+            product="Windows Server",
             version="2003",
-            supported=False,
+            unsupported=True,
             vendor="Microsoft",
         )
     )
