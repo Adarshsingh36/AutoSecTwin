@@ -10,9 +10,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
-from sqlalchemy.orm import Session
 import pytest
-
+from sqlalchemy.orm import Session
 
 from twin_generator.cleanup.config import CleanupSettings
 from twin_generator.cleanup.service import CleanupManager
@@ -20,7 +19,10 @@ from twin_generator.models.twin_instance import TwinInstance
 from twin_generator.utils.enums import EnvironmentType, HealthStatus, TwinStatus
 
 
-def _make_twin(destroy_at: datetime, status: str = TwinStatus.RUNNING.value) -> TwinInstance:
+def _make_twin(
+    destroy_at: datetime,
+    status: str = TwinStatus.RUNNING.value,
+) -> TwinInstance:
     return TwinInstance(
         uuid=uuid.uuid4(),
         cve="CVE-2021-44228",
@@ -33,16 +35,6 @@ def _make_twin(destroy_at: datetime, status: str = TwinStatus.RUNNING.value) -> 
 
 
 @pytest.fixture
-@pytest.fixture
-def manager(
-    session: Session,
-    orchestrator: MagicMock,
-    docker_client: MagicMock,
-) -> CleanupManager:
-    settings = CleanupSettings(enable_snapshot_cleanup=False)
-    return CleanupManager(session, orchestrator, docker_client, settings=settings)
-
-@pytest.fixture
 def docker_client() -> MagicMock:
     client = MagicMock()
     client.containers.list.return_value = []
@@ -51,7 +43,6 @@ def docker_client() -> MagicMock:
     return client
 
 
-@pytest.fixture
 @pytest.fixture
 def manager(
     session: Session,
@@ -140,6 +131,7 @@ def test_sweep_prunes_docker_resources(
     session: Session,
 ) -> None:
     stopped_container = MagicMock()
+
     docker_client.containers.list.return_value = [stopped_container]
     docker_client.networks.prune.return_value = {
         "NetworksDeleted": ["twin-net-a"]
