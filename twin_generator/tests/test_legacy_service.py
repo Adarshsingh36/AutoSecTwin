@@ -1,6 +1,14 @@
+
 """
-Unit tests for LegacyProfilerService. Repository is mocked -- these test
-the classification rules only.
+Unit tests for LegacyProfilerService.
+
+The Twin Generator uses the project's authoritative LegacyProfile database
+model, whose fields are:
+    product     -> software
+    unsupported -> inverse of supported
+    eol         -> eol_date
+
+Repository access is mocked; these tests verify classification behavior.
 """
 
 from __future__ import annotations
@@ -38,10 +46,10 @@ def test_supported_when_flag_true(
 ) -> None:
     service._repo.find.return_value = LegacyProfile(
         id=1,
-        software="Ubuntu",
+        product="Ubuntu",
         version="24.04",
-        supported=True,
-        eol_date=None,
+        unsupported=False,
+        eol=None,
     )
 
     result = service.check("Ubuntu", "24.04")
@@ -55,9 +63,10 @@ def test_legacy_when_flag_false(
 ) -> None:
     service._repo.find.return_value = LegacyProfile(
         id=2,
-        software="Windows Server",
+        product="Windows Server",
         version="2003",
-        supported=False,
+        unsupported=True,
+        eol=None,
     )
 
     result = service.check("Windows Server", "2003")
@@ -70,10 +79,10 @@ def test_legacy_when_eol_date_in_past_and_flag_unset(
 ) -> None:
     service._repo.find.return_value = LegacyProfile(
         id=3,
-        software="Apache Struts",
+        product="Apache Struts",
         version="2.3",
-        supported=None,
-        eol_date=date.today() - timedelta(days=1),
+        unsupported=None,
+        eol=date.today() - timedelta(days=1),
     )
 
     result = service.check("Apache Struts", "2.3")
@@ -86,10 +95,10 @@ def test_supported_when_eol_date_in_future_and_flag_unset(
 ) -> None:
     service._repo.find.return_value = LegacyProfile(
         id=4,
-        software="Node.js",
+        product="Node.js",
         version="20",
-        supported=None,
-        eol_date=date.today() + timedelta(days=365),
+        unsupported=None,
+        eol=date.today() + timedelta(days=365),
     )
 
     result = service.check("Node.js", "20")
@@ -102,10 +111,10 @@ def test_unknown_when_no_flag_and_no_eol_date(
 ) -> None:
     service._repo.find.return_value = LegacyProfile(
         id=5,
-        software="Custom App",
+        product="Custom App",
         version="1.0",
-        supported=None,
-        eol_date=None,
+        unsupported=None,
+        eol=None,
     )
 
     result = service.check("Custom App", "1.0")
