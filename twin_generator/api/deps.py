@@ -2,6 +2,8 @@
 Shared FastAPI dependencies for the Digital Twin Generator.
 """
 
+from __future__ import annotations
+
 from fastapi import Depends
 from sqlalchemy.orm import Session
 
@@ -14,23 +16,25 @@ from twin_generator.registry.service import RegistryService
 from twin_generator.services.orchestrator import TwinOrchestrator
 from twin_generator.vm_engine.manager import VMTwinEngine
 
+
 def get_session():
     yield from get_db()
 
+
 def get_registry_service(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_session),
 ):
     return RegistryService(db)
 
 
 def get_legacy_service(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_session),
 ):
     return LegacyProfilerService(db)
 
 
 def get_orchestrator(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_session),
     registry_service=Depends(get_registry_service),
     legacy_service=Depends(get_legacy_service),
 ):
