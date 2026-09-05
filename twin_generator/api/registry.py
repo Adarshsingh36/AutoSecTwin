@@ -35,18 +35,26 @@ logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/registry", tags=["CVE Image Registry"])
 
 
-@router.post("", response_model=RegistryEntryRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=RegistryEntryRead,
+    status_code=status.HTTP_201_CREATED,
+)
 def create_registry_entry(
     payload: RegistryEntryCreate,
     service: RegistryService = Depends(get_registry_service),
-):
-    print("=" * 60)
-    print("POST /registry called")
-    print(payload)
+) -> RegistryEntryRead:
+    """Create a CVE -> image mapping.
 
-    entry = service.create_entry(payload)
-
-    print("Created ID:", entry.id)
+    Returns HTTP 409 when the same CVE/image/version mapping already exists.
+    """
+    try:
+        entry = service.create_entry(payload)
+    except DuplicateRegistryEntryError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
 
     return RegistryEntryRead.model_validate(entry)
 
