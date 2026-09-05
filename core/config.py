@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     METASPLOIT_RPC_URL: str = "http://localhost:55552/api/"
     METASPLOIT_RPC_USERNAME: str = "msf"
     METASPLOIT_RPC_PASSWORD: str = "msf"
-    DIGITAL_TWIN_BASE_URL: str = "http://localhost:8080"
+    DIGITAL_TWIN_BASE_URL: str = "http://localhost:8081"
 
     OPENAI_API_KEY: str | None = None
     CLAUDE_API_KEY: str | None = None
