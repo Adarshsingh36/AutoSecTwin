@@ -105,9 +105,9 @@ def test_provision_twin_happy_path_no_healthcheck(
     assert result.exposed_ports == [8080]
     assert result.healthy is True
 
-    docker_client.images.pull.assert_called_once_with(
-        "vulhub/log4j:2.15.0"
-    )
+    assert docker_client.images.get.call_count >= 1
+    docker_client.images.pull.assert_not_called()
+    docker_client.images.pull.assert_not_called()
     container.start.assert_called_once()
 
 
@@ -186,6 +186,11 @@ def test_provision_twin_image_pull_failure_raises_before_network_creation(
     fast_settings: DockerEngineSettings,
 ) -> None:
     docker_client = MagicMock()
+
+    docker_client.images.get.side_effect = RuntimeError(
+        "image not found locally"
+    )
+
     docker_client.images.pull.side_effect = RuntimeError(
         "no such image"
     )
@@ -204,6 +209,12 @@ def test_provision_twin_image_pull_failure_raises_before_network_creation(
             image="nonexistent/image",
         )
 
+    docker_client.images.get.assert_called_once_with(
+        "nonexistent/image"
+    )
+    docker_client.images.pull.assert_called_once_with(
+        "nonexistent/image"
+    )
     network_manager.create_isolated_network.assert_not_called()
 
 
