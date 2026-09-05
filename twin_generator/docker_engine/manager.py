@@ -20,13 +20,10 @@ that is the Exploit Engine's responsibility.
 
 from __future__ import annotations
 
-from email.mime import image
-from email.mime import image
 import time
 import uuid
 from typing import TYPE_CHECKING, Dict, Optional
 
-from sqlalchemy import exc
 import structlog
 
 from twin_generator.docker_engine.config import DockerEngineSettings
@@ -153,10 +150,25 @@ class DockerTwinEngine:
     # -- individual steps ---------------------------------------------------
 
     def _pull_image(self, image: str) -> None:
-            try:
-                self._client.images.pull(image)
-            except Exception as exc:
-                raise DockerImagePullError(image, str(exc)) from exc
+        """Ensure the requested image is available locally.
+
+        Reuse locally available images so AutoSecTwin can provision
+        locally built lab/application images. If the image is not
+        present,
+        pull it from the configured Docker registry.
+        """
+        try:
+            self._client.images.get(image)
+            logger.info("docker_image_found_locally", image=image)
+            return
+        except Exception:
+            pass
+
+        try:
+            logger.info("docker_image_not_local_pulling", image=image)
+            self._client.images.pull(image)
+        except Exception as exc:
+            raise DockerImagePullError(image, str(exc)) from exc
 
     def _create_container(
         self,
