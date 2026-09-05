@@ -131,9 +131,8 @@ class TwinOrchestrator:
         self._repo.save(twin)
 
         result = self._docker_engine.provision_twin(
-            twin_uuid=str(twin.uuid),
-            image=image_entry.image,
-            published_ports={80: None},
+        twin_uuid=str(twin.uuid),
+        image=image_entry.image,
         )
 
         twin.twin_image = result.image
