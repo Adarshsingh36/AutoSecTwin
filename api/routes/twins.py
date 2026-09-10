@@ -52,7 +52,7 @@ def get_twin(twin_id: int, db: Session = Depends(get_db)) -> Twin:
         raise HTTPException(status_code=404, detail="Twin not found")
     return twin
 
-@router.post("/{twin_id}/destroy")
+@router.delete("/{twin_id}")
 async def destroy_twin(
     twin_id: int,
     db: Session = Depends(get_db),
@@ -63,10 +63,26 @@ async def destroy_twin(
 
     service = TwinProvisioningService(db)
 
-    await service.destroy(twin_id)
+    try:
+        await service.destroy(twin_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=404,
+            detail="Twin not found",
+        )
+    except RuntimeError as exc:
+        logger.exception(
+            "Failed to destroy twin %s",
+            twin_id,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=str(exc),
+        )
 
     logger.info("Destroyed twin %s", twin_id)
 
     return {
-        "message": "Twin destroyed successfully"
+    "status": "destroyed",
+    "message": "Twin destroyed successfully",
     }
