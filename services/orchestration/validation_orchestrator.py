@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -39,15 +40,17 @@ class ValidationOrchestrator:
           ↓
         Module mapping
           ↓
-        Metasploit module inspection
+        Metasploit inspection
           ↓
-        Readiness check
+        Readiness gate
           ↓
-        Execution against Digital Twin
+        Metasploit execution
+          ↓
+        Evidence collection
           ↓
         Evidence analysis
           ↓
-        Persist validation
+        Validation persistence
     """
 
     def __init__(
@@ -60,17 +63,22 @@ class ValidationOrchestrator:
     ) -> None:
 
         self.executor = executor or ExploitExecutor()
+
         self.validation_engine = (
             validation_engine or ValidationEngine()
         )
+
         self.inspector = (
-            inspector or MetasploitModuleInspector(
+            inspector
+            or MetasploitModuleInspector(
                 rpc_client=self.executor.rpc_client
             )
         )
+
         self.readiness_checker = (
             readiness_checker or ExploitReadinessChecker()
         )
+
         self.mapper = mapper or ExploitMapper()
 
     async def validate(
@@ -80,27 +88,32 @@ class ValidationOrchestrator:
         twin: Twin,
     ) -> OrchestrationResult:
         """
-        Run the complete controlled validation workflow.
+        Execute the complete controlled validation workflow.
+
+        Exploitation is performed only against the supplied
+        Digital Twin.
         """
 
-        # --------------------------------------------------
-        # 1. Resolve exploit → Metasploit module
-        # --------------------------------------------------
+        started_at = datetime.now(timezone.utc)
+
+        # ==================================================
+        # 1. MAP EXPLOIT
+        # ==================================================
 
         mapping = self.mapper.map(exploit)
 
-        # --------------------------------------------------
-        # 2. Inspect module
-        # --------------------------------------------------
+        # ==================================================
+        # 2. INSPECT METASPLOIT MODULE
+        # ==================================================
 
         inspection = await self.inspector.inspect(
             module_type=mapping.module_type,
             module_name=mapping.module_name,
         )
 
-        # --------------------------------------------------
-        # 3. Check execution readiness
-        # --------------------------------------------------
+        # ==================================================
+        # 3. READINESS CHECK
+        # ==================================================
 
         supplied_options: dict[str, Any] = (
             mapping.metadata.get("options", {})
@@ -114,13 +127,16 @@ class ValidationOrchestrator:
             supplied_options=supplied_options,
         )
 
-        # --------------------------------------------------
-        # 4. Do NOT execute if readiness gate fails
-        # --------------------------------------------------
+        # ==================================================
+        # 4. BLOCK IF NOT READY
+        # ==================================================
 
         if not readiness.ready:
 
+            completed_at = datetime.now(timezone.utc)
+
             validation = Validation(
+                vulnerability_id=exploit.vulnerability_id,
                 exploit_id=exploit.id,
                 twin_id=twin.id,
                 status="failed",
@@ -139,6 +155,8 @@ class ValidationOrchestrator:
                     "module_type": mapping.module_type,
                     "module_name": mapping.module_name,
                 },
+                started_at=started_at,
+                completed_at=completed_at,
             )
 
             db.add(validation)
@@ -151,18 +169,18 @@ class ValidationOrchestrator:
                 readiness=readiness,
             )
 
-        # --------------------------------------------------
-        # 5. Execute against Digital Twin
-        # --------------------------------------------------
+        # ==================================================
+        # 5. EXECUTE AGAINST DIGITAL TWIN
+        # ==================================================
 
         execution = await self.executor.execute(
             exploit=exploit,
             twin=twin,
         )
 
-        # --------------------------------------------------
-        # 6. Analyze evidence
-        # --------------------------------------------------
+        # ==================================================
+        # 6. ANALYZE EVIDENCE
+        # ==================================================
 
         status, score, analysis = (
             self.validation_engine.analyze(
@@ -170,17 +188,22 @@ class ValidationOrchestrator:
             )
         )
 
-        # --------------------------------------------------
-        # 7. Persist validation
-        # --------------------------------------------------
+        completed_at = datetime.now(timezone.utc)
+
+        # ==================================================
+        # 7. PERSIST VALIDATION
+        # ==================================================
 
         validation = Validation(
+            vulnerability_id=exploit.vulnerability_id,
             exploit_id=exploit.id,
             twin_id=twin.id,
             status=status,
             validation_score=score,
             analysis=analysis,
             evidence=execution.evidence,
+            started_at=started_at,
+            completed_at=completed_at,
         )
 
         db.add(validation)
