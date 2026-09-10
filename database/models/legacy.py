@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, Date, DateTime, Float, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, JSON, String, Text 
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -21,7 +21,7 @@ class LegacyProfile(Base):
 
     unsupported = Column(Boolean)
 
-    eol = Column(Date)
+    eol = Column(Boolean)
 
     support_status = Column(String)
 
