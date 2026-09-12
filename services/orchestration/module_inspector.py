@@ -1,7 +1,10 @@
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 from integrations.metasploit.rpc_client import MetasploitRPCClient
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -40,10 +43,38 @@ class MetasploitModuleInspector:
         module_name: str,
     ) -> ModuleInspection:
 
-        metadata = await self.rpc_client.get_module_info(
-            module_type=module_type,
-            module_name=module_name,
-        )
+        try:
+            metadata = await self.rpc_client.get_module_info(
+                module_type=module_type,
+                module_name=module_name,
+            )
+        except Exception:
+            # Module unavailable, Metasploit unreachable, or authentication
+            # failed. Do not raise here -- the orchestration layer must be
+            # able to record this as a readiness failure rather than crash
+            # the whole validation workflow (see exploit readiness gate).
+            logger.exception(
+                "Metasploit module inspection failed for %s/%s",
+                module_type,
+                module_name,
+            )
+            return ModuleInspection(
+                available=False,
+                module_type=module_type,
+                module_name=module_name,
+                fullname=None,
+                rank=None,
+                platform=None,
+                architecture=None,
+                privileged=None,
+                check_supported=False,
+                targets=[],
+                default_target=None,
+                options={},
+                default_options={},
+                references=[],
+                raw_metadata={},
+            )
 
         return ModuleInspection(
             available=True,
