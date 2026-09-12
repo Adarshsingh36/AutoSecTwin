@@ -62,12 +62,12 @@ class TwinRead(BaseModel):
     twin_image: Optional[str]
     vm_name: Optional[str]
     ip_address: Optional[str]
+    endpoint: Optional[str]
     network: Optional[str]
     health: HealthStatus
     legacy_flag: LegacyFlag
     created_at: datetime
     destroy_at: Optional[datetime]
-
 
 class TwinListItem(BaseModel):
     """Condensed representation for GET /twins list responses."""
