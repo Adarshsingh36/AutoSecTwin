@@ -1,16 +1,21 @@
+import asyncio
 import logging
+import time
 from fastapi import HTTPException
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from core.config import settings
 from database.models.asset import Asset
 from database.models.twin import Twin
 from database.models.vulnerability import Vulnerability
 
 from integrations.digital_twin.twin_client import DigitalTwinClient
-from sqlalchemy.exc import SQLAlchemyError
 
 logger = logging.getLogger(__name__)
+
+READY_HEALTH_VALUES = {"healthy", "ready", "running"}
+FAILED_HEALTH_VALUES = {"failed", "error", "unhealthy"}
 
 
 class TwinProvisioningService:
@@ -149,6 +154,65 @@ class TwinProvisioningService:
         )
 
         return twin
+
+    async def wait_until_ready(
+        self,
+        twin: Twin,
+        timeout_seconds: float | None = None,
+        poll_interval_seconds: float | None = None,
+    ) -> Twin:
+        """Poll the Digital Twin Generator until the twin reports healthy.
+
+        If the twin already reports a ready health value, returns
+        immediately. Never blocks indefinitely -- raises ``HTTPException``
+        (502) if the timeout elapses or the twin reports a failed state.
+        """
+
+        timeout_seconds = timeout_seconds or settings.TWIN_HEALTH_TIMEOUT_SECONDS
+        poll_interval_seconds = poll_interval_seconds or settings.TWIN_HEALTH_POLL_INTERVAL_SECONDS
+
+        if (twin.health or "").lower() in READY_HEALTH_VALUES:
+            return twin
+
+        if twin.external_twin_id is None:
+            # No external reference to poll -- trust the initial status.
+            return twin
+
+        deadline = time.monotonic() + timeout_seconds
+
+        while time.monotonic() < deadline:
+            try:
+                health_data = await self.twin_client.get_twin_health(str(twin.external_twin_id))
+            except RuntimeError as exc:
+                logger.warning("Twin health check failed for twin %s: %s", twin.id, exc)
+                await asyncio.sleep(poll_interval_seconds)
+                continue
+
+            health = str(health_data.get("health") or health_data.get("status") or "").lower()
+
+            if health in READY_HEALTH_VALUES:
+                twin.health = health
+                twin.status = "ready"
+                self.db.commit()
+                self.db.refresh(twin)
+                return twin
+
+            if health in FAILED_HEALTH_VALUES:
+                twin.health = health
+                twin.status = "failed"
+                self.db.commit()
+                self.db.refresh(twin)
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Twin {twin.id} reported failed health state: {health}",
+                )
+
+            await asyncio.sleep(poll_interval_seconds)
+
+        raise HTTPException(
+            status_code=504,
+            detail=f"Timed out waiting for Twin {twin.id} to become healthy.",
+        )
 
     async def destroy(
         self,

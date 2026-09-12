@@ -131,14 +131,21 @@ class TwinOrchestrator:
         self._repo.save(twin)
 
         result = self._docker_engine.provision_twin(
-        twin_uuid=str(twin.uuid),
-        image=image_entry.image,
+            twin_uuid=str(twin.uuid),
+            image=image_entry.image,
         )
 
         twin.twin_image = result.image
         twin.ip_address = result.ip_address
         twin.network = result.network_name
-        twin.health = (HealthStatus.HEALTHY if result.healthy else HealthStatus.UNHEALTHY).value
+
+        # Determine the externally reachable endpoint for validation engines.
+        twin.endpoint = self._build_endpoint(result)
+        twin.health = (
+            HealthStatus.HEALTHY
+            if result.healthy
+            else HealthStatus.UNHEALTHY
+        ).value
         self._repo.save(twin)
 
         self._repo.add_log(twin.id, TwinLogEvent.NETWORK_ASSIGNED, result.network_name)
@@ -148,6 +155,14 @@ class TwinOrchestrator:
             TwinLogEvent.HEALTH_CHECK_PASSED if result.healthy else TwinLogEvent.HEALTH_CHECK_FAILED,
             f"container_id={result.container_id}",
         )
+
+    def _build_endpoint(self, result) -> Optional[str]:
+        """Build the validation endpoint from Docker's published ports."""
+        for container_port, host_port in result.published_ports.items():
+            if host_port is not None:
+                return f"{self._docker_engine._settings.host_address}:{host_port}"
+
+        return None
 
     def _provision_vm(self, twin: TwinInstance) -> None:
         twin.status = TwinStatus.CREATING.value

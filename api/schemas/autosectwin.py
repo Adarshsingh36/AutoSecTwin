@@ -101,6 +101,7 @@ class ValidationResponse(ValidationCreate):
     id: int
     status: str
     validation_score: float
+    phase: str = "initial"
     analysis: str | None = None
     created_at: datetime
 

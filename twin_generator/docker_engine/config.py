@@ -30,3 +30,11 @@ class DockerEngineSettings(BaseSettings):
     )
     image_pull_timeout_seconds: int = Field(default=300, ge=1)
     default_network_driver: str = Field(default="bridge")
+    public_host: str = Field(
+        default="192.168.56.1",
+        description="Host-only adapter address reachable by Kali for twin validation.",
+    )
+    host_address: str = Field(
+    default="127.0.0.1",
+    description="Host address used to construct externally reachable validation endpoints.",
+)

@@ -121,6 +121,7 @@ class ValidationOrchestrator:
         if not readiness.ready:
 
             validation = Validation(
+                vulnerability_id=exploit.vulnerability_id,
                 exploit_id=exploit.id,
                 twin_id=twin.id,
                 status="failed",
@@ -175,6 +176,7 @@ class ValidationOrchestrator:
         # --------------------------------------------------
 
         validation = Validation(
+            vulnerability_id=exploit.vulnerability_id,
             exploit_id=exploit.id,
             twin_id=twin.id,
             status=status,

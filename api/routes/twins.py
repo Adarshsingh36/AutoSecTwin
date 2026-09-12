@@ -10,6 +10,7 @@ from api.schemas.autosectwin import (
     TwinResponse,
     TwinProvisionRequest,
     TwinProvisionResponse,
+    TwinDestroyResponse,
 )
 from database.models.twin import Twin
 
@@ -52,21 +53,29 @@ def get_twin(twin_id: int, db: Session = Depends(get_db)) -> Twin:
         raise HTTPException(status_code=404, detail="Twin not found")
     return twin
 
-@router.post("/{twin_id}/destroy")
+@router.delete("/{twin_id}", response_model=TwinDestroyResponse)
+@router.post("/{twin_id}/destroy", response_model=TwinDestroyResponse)
 async def destroy_twin(
     twin_id: int,
     db: Session = Depends(get_db),
-) -> dict:
+) -> TwinDestroyResponse:
     """
     Destroy a provisioned digital twin.
+
+    Exposed as both ``DELETE /twins/{id}`` (REST-conventional) and
+    ``POST /twins/{id}/destroy`` (kept for backward compatibility with
+    existing clients/tests).
     """
 
     service = TwinProvisioningService(db)
 
-    await service.destroy(twin_id)
+    twin = await service.destroy(twin_id)
 
     logger.info("Destroyed twin %s", twin_id)
 
-    return {
-        "message": "Twin destroyed successfully"
-    }
+    return TwinDestroyResponse(
+        id=twin.id,
+        status=twin.status,
+        destroyed=twin.status == "destroyed",
+        message="Twin destroyed successfully",
+    )

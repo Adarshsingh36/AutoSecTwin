@@ -79,9 +79,15 @@ class TwinInstance(Base):
     )
 
     ip_address: Mapped[Optional[str]] = mapped_column(
-        String(45),
-        nullable=True,
-        doc="Assigned IP address on the isolated twin network (IPv4 or IPv6).",
+    String(45),
+    nullable=True,
+    doc="Assigned IP address on the isolated twin network (IPv4 or IPv6).",
+    )
+
+    endpoint: Mapped[Optional[str]] = mapped_column(
+    String(255),
+    nullable=True,
+    doc="Externally reachable host:port endpoint for validation engines.",
     )
 
     network: Mapped[Optional[str]] = mapped_column(

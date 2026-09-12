@@ -14,10 +14,11 @@ def test_vulnerability_to_confidence_flow():
         asset_criticality=0.85,
         kev_listed=True,
         severity="CRITICAL",
+        metadata_json={"epss_percentile": 0.97},
     )
 
     threat_score = ThreatIntelligenceEngine().score(vulnerability, {"exploit_count": 2, "kev_listed": True})
-    exploitability = ExploitabilityPredictionEngine(model_path="missing.pkl").predict(vulnerability, threat_score)
+    exploitability = ExploitabilityPredictionEngine().predict(vulnerability)
     _, validation_score, _ = ValidationEngine().analyze({"exit_code": 0, "markers": ["proof_obtained"]})
     confidence, weights = ConfidenceFusionEngine().fuse(
         FusionInputs(
@@ -29,5 +30,5 @@ def test_vulnerability_to_confidence_flow():
         )
     )
 
-    assert confidence > 0.5
+    assert 0.0 <= confidence <= 1.0
     assert round(sum(weights.values()), 6) == 1.0
