@@ -8,9 +8,40 @@ from core.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Modules AutoSecTwin knows how to simulate deterministically in MOCK_MODE.
+# Any other module name still "succeeds" in mock mode but with generic,
+# clearly-simulated evidence, so the closed loop can run against arbitrary
+# exploit candidates during local development/testing.
+_MOCK_MODULE_INFO: dict[str, dict[str, Any]] = {
+    "windows/smb/ms17_010_eternalblue": {
+        "type": "exploit",
+        "fullname": "exploit/windows/smb/ms17_010_eternalblue",
+        "rank": "average",
+        "platform": "windows",
+        "arch": "x86, x64",
+        "privileged": True,
+        "check": True,
+        "targets": ["Windows 7 and Server 2008 R2 (x64) All Service Packs"],
+        "default_target": 0,
+        "options": {
+            "RHOSTS": {"required": True, "type": "address"},
+            "RPORT": {"required": True, "type": "port", "default": 445},
+        },
+        "default_options": {"RPORT": 445},
+        "references": [["CVE", "2017-0144"], ["MSB", "MS17-010"]],
+    }
+}
+
 
 class MetasploitRPCClient:
-    """Minimal Metasploit MessagePack RPC client for exploit orchestration."""
+    """Minimal Metasploit MessagePack RPC client for exploit orchestration.
+
+    Supports a deterministic ``MOCK_MODE`` (see ``core.config.settings``) so
+    the validation workflow can be exercised end-to-end without a running
+    Metasploit RPC daemon. Simulated responses are always tagged with
+    ``simulated: True`` so callers/persisted evidence can distinguish them
+    from a real execution.
+    """
 
     def __init__(
         self,
@@ -23,10 +54,15 @@ class MetasploitRPCClient:
         self.username = username
         self.password = password
         self.timeout = timeout
+        self.mock_mode = settings.MOCK_MODE
         self._token: str | None = None
 
     async def login(self) -> str:
         """Authenticate with Metasploit RPC and cache the token."""
+
+        if self.mock_mode:
+            self._token = "mock-token"
+            return self._token
 
         payload = ["auth.login", self.username, self.password]
 
@@ -51,6 +87,9 @@ class MetasploitRPCClient:
     ) -> dict[str, Any]:
         """Execute a Metasploit module."""
 
+        if self.mock_mode:
+            return self._mock_run_module(module_type, module_name, options)
+
         token = self._token or await self.login()
 
         return await self._call_raw(
@@ -70,6 +109,9 @@ class MetasploitRPCClient:
     ) -> dict[str, Any]:
         """Retrieve Metasploit module metadata without executing it."""
 
+        if self.mock_mode:
+            return self._mock_module_info(module_type, module_name)
+
         token = self._token or await self.login()
 
         return await self._call_raw(
@@ -87,6 +129,9 @@ class MetasploitRPCClient:
         options: dict[str, Any],
     ) -> dict[str, Any]:
         """Run a Metasploit module check without executing the exploit."""
+
+        if self.mock_mode:
+            return {"code": "vulnerable", "simulated": True}
 
         token = self._token or await self.login()
 
@@ -269,6 +314,76 @@ class MetasploitRPCClient:
                 command,
             ]
         )
+
+    def _mock_module_info(self, module_type: str, module_name: str) -> dict[str, Any]:
+        """Return deterministic module metadata for MOCK_MODE."""
+
+        known = _MOCK_MODULE_INFO.get(module_name)
+        if known is not None:
+            metadata = dict(known)
+        else:
+            # Generic exploit shape: only requires RHOSTS, which the
+            # orchestration layer always derives from the Digital Twin.
+            metadata = {
+                "type": module_type,
+                "fullname": f"{module_type}/{module_name}",
+                "rank": "average",
+                "platform": "linux",
+                "arch": "x86, x64",
+                "privileged": False,
+                "check": True,
+                "targets": ["Automatic"],
+                "default_target": 0,
+                "options": {"RHOSTS": {"required": True, "type": "address"}},
+                "default_options": {},
+                "references": [],
+            }
+        metadata["simulated"] = True
+        return metadata
+
+    def _mock_run_module(
+        self,
+        module_type: str,
+        module_name: str,
+        options: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Return deterministic exploit execution evidence for MOCK_MODE.
+
+        The simulated module "succeeds" against the Digital Twin (which is
+        exactly the isolated environment MOCK_MODE stands in for), returning
+        success markers the ValidationEngine recognizes.
+        """
+
+        target = options.get("RHOSTS") or options.get("RHOST") or "unknown"
+
+        if str(options.get("_simulated_remediated", "false")).lower() == "true":
+            return {
+                "job_id": 1,
+                "uuid": "mock-job",
+                "exit_code": 1,
+                "markers": [],
+                "stdout": (
+                    f"[*] Simulated {module_type}/{module_name} run against {target}\n"
+                    "[-] Connection refused: vulnerable service disabled by remediation (simulated)\n"
+                ),
+                "stderr": "Exploit failed: target no longer vulnerable (simulated remediation)",
+                "session_id": None,
+                "simulated": True,
+            }
+
+        return {
+            "job_id": 1,
+            "uuid": "mock-job",
+            "exit_code": 0,
+            "markers": ["shell_opened", "proof_obtained"],
+            "stdout": (
+                f"[*] Simulated {module_type}/{module_name} run against {target}\n"
+                "[*] Meterpreter session opened (simulated)\n"
+            ),
+            "stderr": "",
+            "session_id": 1,
+            "simulated": True,
+        }
 
     @staticmethod
     def _decode_bytes(value: Any) -> Any:
