@@ -2,6 +2,7 @@ from .asset import Asset
 from .audit import Audit
 from .confidence import Confidence
 from .learning_event import LearningEvent
+from .orchestration_job import OrchestrationJob
 from .remediation import Remediation
 from .twin import Twin
 from .vulnerability import Vulnerability
@@ -24,6 +25,7 @@ __all__ = [
     "LegacyProfile",
     "LearningEvent",
     "ModelDrift",
+    "OrchestrationJob",
     "Recommendation",
     "Remediation",
     "Report",
