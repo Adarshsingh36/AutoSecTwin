@@ -10,37 +10,58 @@ from services.threat_intelligence import ThreatIntelligenceEngine
 from services.validation.validation_engine import ValidationEngine
 
 
-def test_feature_engineering_normalizes_values():
+def test_feature_engineering_builds_model_feature_set():
     vuln = SimpleNamespace(
         cvss_score=9.8,
         epss_score=0.72,
-        exposure_score=0.8,
-        asset_criticality=0.9,
         kev_listed=True,
-        severity="CRITICAL",
+        metadata_json={"epss_percentile": 0.95},
     )
 
-    features = FeatureEngineeringEngine().build(vuln, threat_intel_score=0.6)
+    features = FeatureEngineeringEngine().build(vuln)
 
-    assert features["cvss"] == pytest.approx(0.98)
-    assert features["kev"] == 1.0
-    assert all(0.0 <= value <= 1.0 for value in features.values())
+    assert features["CVSS_SCORE"] == pytest.approx(9.8)
+    assert features["EPSS_SCORE"] == pytest.approx(0.72)
+    assert features["EPSS_PERCENTILE"] == pytest.approx(0.95)
+    assert features["KEV_STATUS"] == 1.0
 
 
-def test_exploitability_predictor_heuristic_returns_probability():
+def test_feature_engineering_preserves_missing_values_as_nan():
+    import math
+
+    vuln = SimpleNamespace(cvss_score=None, epss_score=None, kev_listed=False, metadata_json=None)
+
+    features = FeatureEngineeringEngine().build(vuln)
+
+    assert math.isnan(features["CVSS_SCORE"])
+    assert math.isnan(features["EPSS_PERCENTILE"])
+    assert features["KEV_STATUS"] == 0.0
+
+
+def test_exploitability_predictor_uses_trained_model():
+    """No heuristic fallback: the predictor must use the trained XGBoost
+    artifact shipped in the repo (ml/models/exploitability_xgb.joblib)."""
+
     vuln = SimpleNamespace(
         cvss_score=9.8,
         epss_score=0.8,
-        exposure_score=0.7,
-        asset_criticality=0.9,
         kev_listed=True,
-        severity="CRITICAL",
+        metadata_json={"epss_percentile": 0.95},
     )
 
-    score = ExploitabilityPredictionEngine(model_path="missing.pkl").predict(vuln, 0.7)
+    score = ExploitabilityPredictionEngine().predict(vuln)
 
     assert 0.0 <= score <= 1.0
-    assert score > 0.5
+
+
+def test_exploitability_predictor_propagates_model_failure():
+    """Model failures must be raised, not silently papered over with a fake
+    heuristic score -- the orchestration layer is responsible for handling
+    the failure cleanly (see ClosedLoopOrchestrator._predict_exploitability).
+    """
+
+    with pytest.raises(FileNotFoundError):
+        ExploitabilityPredictionEngine(model_path="missing.joblib")
 
 
 def test_threat_intelligence_score_uses_external_signals():
