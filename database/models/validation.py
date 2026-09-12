@@ -15,6 +15,11 @@ class Validation(Base):
     exploit_id = Column(Integer, ForeignKey("exploits.id"), nullable=True, index=True)
     twin_id = Column(Integer, ForeignKey("twins.id"), nullable=True, index=True)
     status = Column(String(40), default="pending", nullable=False)
+    # "initial" (first controlled validation) or "revalidation" (re-run
+    # after remediation was applied). Lets the closed-loop orchestrator and
+    # RevalidationEngine reuse this table instead of duplicating it, per
+    # the "do not create duplicate tables" requirement.
+    phase = Column(String(20), default="initial", nullable=False)
     validation_score = Column(Float, default=0.0, nullable=False)
     evidence = Column(JSON, nullable=True)
     analysis = Column(Text, nullable=True)
