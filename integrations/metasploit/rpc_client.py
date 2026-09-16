@@ -80,19 +80,19 @@ class MetasploitRPCClient:
         return token
 
     async def run_module(
-        self,
-        module_type: str,
-        module_name: str,
-        options: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Execute a Metasploit module."""
+    self,
+    module_type: str,
+    module_name: str,
+    options: dict[str, Any],
+) -> dict[str, Any]:
+        """Execute a Metasploit module and collect its job completion state."""
 
         if self.mock_mode:
             return self._mock_run_module(module_type, module_name, options)
 
         token = self._token or await self.login()
 
-        return await self._call_raw(
+        result = await self._call_raw(
             [
                 "module.execute",
                 token,
@@ -101,6 +101,34 @@ class MetasploitRPCClient:
                 options,
             ]
         )
+
+        logger.info("Metasploit module.execute response: %s", result)
+
+        job_id = result.get("job_id")
+
+        if job_id is None:
+            # Some Metasploit responses may not create a background job.
+            # Preserve the original response rather than inventing evidence.
+            return result
+
+        try:
+            job_id = int(job_id)
+        except (TypeError, ValueError):
+            logger.warning("Unexpected Metasploit job_id: %r", job_id)
+            return result
+
+        completion = await self.wait_for_job(job_id)
+
+        logger.info(
+            "Metasploit job %s completion response: %s",
+            job_id,
+            completion,
+        )
+
+        return {
+            **result,
+            "job_completion": completion,
+        }
 
     async def get_module_info(
         self,
@@ -122,13 +150,6 @@ class MetasploitRPCClient:
                 module_name,
             ]
         )
-    async def check_module(
-        self,
-        module_type: str,
-        module_name: str,
-        options: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Run a Metasploit module check without executing the exploit."""
 
         if self.mock_mode:
             return {"code": "vulnerable", "simulated": True}
