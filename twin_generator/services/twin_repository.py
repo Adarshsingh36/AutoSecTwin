@@ -51,9 +51,11 @@ class TwinRepository:
         return result.scalars().all()
 
     def save(self, twin: TwinInstance) -> TwinInstance:
-        """Flush pending in-place attribute changes on an already-tracked twin."""
+        """Persist changes on an existing TwinInstance."""
+
         self._session.flush()
         self._session.refresh(twin)
+
         return twin
 
     def add_log(
