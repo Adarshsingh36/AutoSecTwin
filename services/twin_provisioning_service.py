@@ -107,7 +107,7 @@ class TwinProvisioningService:
             name=f"{asset.name}-{vulnerability.cve_id}",
             provider="TwinGenerator",
             status=twin_data.get("status", "requested"),
-            endpoint=twin_data.get("ip_address"),
+            endpoint=twin_data.get("endpoint") or twin_data.get("ip_address"),
             topology=twin_data,
             notes=f"Provisioned for {vulnerability.cve_id}",
 
