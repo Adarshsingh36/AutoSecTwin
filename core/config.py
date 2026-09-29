@@ -54,7 +54,7 @@ class Settings(BaseSettings):
 
     # Whether the closed-loop orchestrator destroys the Digital Twin after
     # the workflow completes (success or failure).
-    ORCHESTRATION_DESTROY_TWIN_AFTER_RUN: bool = True
+    ORCHESTRATION_DESTROY_TWIN_AFTER_RUN: bool = False
 
     # Safety boundary: exploit execution is only permitted against hosts
     # that resolve to a Twin provisioned by TwinProvisioningService. This

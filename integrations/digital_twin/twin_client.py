@@ -84,18 +84,31 @@ class DigitalTwinClient:
         """Destroy a twin environment."""
 
         if self.mock_mode:
-            return {"id": twin_external_id, "status": "destroyed", "simulated": True}
+            return {
+                "id": twin_external_id,
+                "status": "destroyed",
+                "simulated": True,
+            }
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.delete(f"{self.base_url}/twins/{twin_external_id}")
+                response = await client.post(
+                    f"{self.base_url}/twins/{twin_external_id}/destroy"
+                )
                 response.raise_for_status()
+
                 data = response.json()
                 data.setdefault("simulated", False)
                 return data
+
         except httpx.HTTPError as exc:
-            logger.exception("Digital twin destruction failed for %s", twin_external_id)
-            raise RuntimeError(f"Digital twin destruction failed for {twin_external_id}") from exc
+            logger.exception(
+                "Digital twin destruction failed for %s",
+                twin_external_id,
+            )
+            raise RuntimeError(
+                f"Digital twin destruction failed for {twin_external_id}"
+            ) from exc
 
     @staticmethod
     def _mock_twin(cve: str, environment: str | None) -> dict[str, Any]:

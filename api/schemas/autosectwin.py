@@ -232,6 +232,7 @@ class ApprovalDecision(BaseModel):
     status: str
     decided_by: str
     decision_reason: str | None = None
+    reviewer_input: dict[str, Any] | None = None
 
 
 class ApprovalResponse(ApprovalCreate):
@@ -247,17 +248,23 @@ class ApprovalResponse(ApprovalCreate):
 
 class RemediationCreate(BaseModel):
     vulnerability_id: int
-    recommendation_id: int | None = None
+    recommendation_id: int
     action: str
     applied_by: str | None = None
 
 
-class RemediationResponse(RemediationCreate):
+class RemediationResponse(BaseModel):
     id: int
+    vulnerability_id: int
+    recommendation_id: int | None = None
     status: str
+    action: str
+    applied_by: str | None = None
     verification_score: float
     evidence: dict[str, Any] | None = None
     created_at: datetime
+    applied_at: datetime | None = None
+    verified_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -331,3 +338,26 @@ class TwinDestroyResponse(BaseModel):
     status: str
     destroyed: bool
     message: str
+
+
+
+class HumanReviewResponse(BaseModel):
+    vulnerability_id: int
+    cve_id: str
+    title: str | None = None
+    severity: str | None = None
+    cvss_score: float | None = None
+
+    vulnerability_explanation: dict[str, Any]
+
+    recommendation_id: int
+    recommendation_type: str
+    recommendation_title: str
+    recommendation_content: str
+    recommendation_provider: str
+    remediation_explanation: dict[str, Any]
+
+    human_approval_required: bool
+    approval_status: str
+
+    model_config = {"from_attributes": True}

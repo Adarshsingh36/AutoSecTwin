@@ -39,9 +39,6 @@ from twin_generator.vm_engine.manager import VMTwinEngine
 
 logger = structlog.get_logger(__name__)
 
-DEFAULT_TTL_SECONDS = 3600
-
-
 class TwinOrchestrator:
     """Coordinates twin creation, lookup, health reporting, and on-demand destruction."""
 
@@ -64,7 +61,11 @@ class TwinOrchestrator:
 
     def create_twin(self, payload: TwinCreateRequest) -> TwinInstance:
         twin_uuid = uuid.uuid4()
-        ttl = payload.ttl_seconds or DEFAULT_TTL_SECONDS
+        destroy_at = (
+            datetime.now(timezone.utc) + timedelta(seconds=payload.ttl_seconds)
+            if payload.ttl_seconds is not None
+            else None
+        )
 
         twin = TwinInstance(
             uuid=twin_uuid,
@@ -74,10 +75,9 @@ class TwinOrchestrator:
             environment=(payload.environment or EnvironmentType.DOCKER).value,
             health=HealthStatus.UNKNOWN.value,
             created_at=datetime.now(timezone.utc),
-            destroy_at=datetime.now(timezone.utc) + timedelta(seconds=ttl),
+            destroy_at=destroy_at,
         )
         twin = self._repo.create(twin)
-        self._repo.add_log(twin.id, TwinLogEvent.CREATED, f"cve={payload.cve}")
 
         try:
             if payload.environment == EnvironmentType.VM:
@@ -156,8 +156,14 @@ class TwinOrchestrator:
             f"container_id={result.container_id}",
         )
 
-    def _build_endpoint(self, result) -> Optional[str]:
-        """Build the validation endpoint from Docker's published ports."""
+    def _build_endpoint(self, result):
+        preferred_ports = [61616]
+
+        for container_port in preferred_ports:
+            host_port = result.published_ports.get(container_port)
+            if host_port is not None:
+                return f"{self._docker_engine._settings.host_address}:{host_port}"
+
         for container_port, host_port in result.published_ports.items():
             if host_port is not None:
                 return f"{self._docker_engine._settings.host_address}:{host_port}"

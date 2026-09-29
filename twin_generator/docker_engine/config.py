@@ -35,6 +35,6 @@ class DockerEngineSettings(BaseSettings):
         description="Host-only adapter address reachable by Kali for twin validation.",
     )
     host_address: str = Field(
-    default="127.0.0.1",
+    default="192.168.56.1",
     description="Host address used to construct externally reachable validation endpoints.",
 )
