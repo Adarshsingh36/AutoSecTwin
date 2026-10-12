@@ -23,6 +23,7 @@ from twin_generator.utils.enums import (
 )
 from twin_generator.utils.exceptions import (
     NoRegistryEntryForCveError,
+    NoRegistryEntryForVersionError,
     TwinProvisioningError,
 )
 from twin_generator.vm_engine.schemas import VMProvisionResult
@@ -262,3 +263,52 @@ def test_destroy_twin_calls_vm_poweroff(
     orchestrator.destroy_twin(twin.id)
 
     vm_engine.power_off.assert_called_once_with(twin.vm_name)
+
+def test_create_twin_passes_requested_version_to_registry(
+    orchestrator: TwinOrchestrator,
+    registry_service: MagicMock,
+    docker_engine: MagicMock,
+) -> None:
+    """Requesting a specific version (e.g. the fixed one, for remediation)
+    must reach the registry lookup, not just be ignored."""
+    registry_service.resolve_image_for_cve.return_value = MagicMock(
+        image="apache/activemq-classic"
+    )
+    docker_engine.provision_twin.return_value = _docker_result(healthy=True)
+
+    orchestrator.create_twin(
+        TwinCreateRequest(cve="CVE-2023-46604", version="5.17.6")
+    )
+
+    registry_service.resolve_image_for_cve.assert_called_once_with(
+        "CVE-2023-46604", version="5.17.6"
+    )
+
+
+def test_create_twin_does_not_fall_back_to_vm_when_version_is_unregistered(
+    orchestrator: TwinOrchestrator,
+    registry_service: MagicMock,
+    vm_engine: MagicMock,
+) -> None:
+    """A known CVE with an unregistered *version* must surface as a clear
+    error, not silently provision an unrelated VM twin -- that would hide
+    a real registry gap exactly when a remediation demo needs the fixed
+    version to be deployed for real.
+
+    create_twin()'s outer handler wraps every provisioning failure into
+    TwinProvisioningError uniformly (sets status=FAILED, logs the error) --
+    that wrapping is intentional and applies here too. What matters is
+    that the original NoRegistryEntryForVersionError is the cause (not
+    silently swallowed into a VM provision) and VM was never attempted.
+    """
+    registry_service.resolve_image_for_cve.side_effect = NoRegistryEntryForVersionError(
+        "CVE-2023-46604", "5.17.6", ["5.17.3"]
+    )
+
+    with pytest.raises(TwinProvisioningError) as exc_info:
+        orchestrator.create_twin(
+            TwinCreateRequest(cve="CVE-2023-46604", version="5.17.6")
+        )
+
+    assert isinstance(exc_info.value.__cause__, NoRegistryEntryForVersionError)
+    vm_engine.provision_twin.assert_not_called()
