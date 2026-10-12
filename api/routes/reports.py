@@ -1,3 +1,4 @@
+import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -6,12 +7,53 @@ from sqlalchemy.orm import Session
 
 from api.dependencies import get_db
 from api.schemas.autosectwin import ReportCreate, ReportResponse
+from database.models.remediation import Remediation
 from database.models.report import Report
 from database.models.vulnerability import Vulnerability
+from services.reporting.closed_loop_report_service import build_closed_loop_report
 from services.reporting.report_generator import ReportGenerator
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+@router.post("/closed-loop/{remediation_id}", response_model=ReportResponse)
+def create_closed_loop_report(remediation_id: int, db: Session = Depends(get_db)) -> Report:
+    """Build and persist the full technical closed-loop report for a
+    remediation: vulnerability technical analysis, exploit execution
+    evidence, validation scoring, approval, remediation execution,
+    revalidation, and before/after comparison -- all pulled from real
+    persisted rows, nothing supplied by the caller.
+
+    Once persisted, use the existing GET /reports/{id}/html and
+    GET /reports/{id}/pdf routes to render it -- they're generic over any
+    report's JSON content, closed-loop included.
+    """
+
+    remediation = db.query(Remediation).filter(Remediation.id == remediation_id).first()
+    if remediation is None:
+        raise HTTPException(status_code=404, detail=f"Remediation {remediation_id} not found")
+
+    try:
+        content = build_closed_loop_report(db, remediation_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    body = json.loads(content)
+
+    report = Report(
+        vulnerability_id=remediation.vulnerability_id,
+        report_type="closed_loop",
+        title=body.get("title", f"Closed-Loop Report: Remediation {remediation_id}"),
+        content=content,
+        format="json",
+        metadata_json={"remediation_id": remediation_id},
+    )
+    db.add(report)
+    db.commit()
+    db.refresh(report)
+    logger.info("Generated closed-loop report %s for remediation %s", report.id, remediation_id)
+    return report
 
 
 @router.post("/", response_model=ReportResponse)
