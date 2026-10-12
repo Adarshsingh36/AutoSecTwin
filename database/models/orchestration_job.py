@@ -1,4 +1,4 @@
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import Column, DateTime, Integer, JSON, String, Text, ForeignKey
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -6,44 +6,37 @@ from database.base import Base
 
 
 class OrchestrationJob(Base):
-    """Tracks a single closed-loop AutoSecTwin workflow run.
+    """
+    Tracks a single dispatch of the closed-loop orchestrator for one
+    vulnerability: Twin provisioning -> exploit validation -> recommendation
+    generation, then stopping at the human-approval gate.
 
-    A row is created immediately when ``POST /orchestration/run`` is called
-    (status="queued") so the HTTP request never has to block on twin
-    provisioning, Metasploit execution, remediation, or revalidation. The
-    background task updates ``status``/``stage``/``progress``/``message`` as
-    it proceeds so the client can poll ``GET /orchestration/{job_id}``.
+    This is a job-tracking record only. It never itself decides whether a
+    finding is exploitable, remediated, or verified -- those facts live on
+    Validation/Remediation rows. `result_summary` is a pointer to those rows
+    (ids), not a restatement of their content.
     """
 
     __tablename__ = "orchestration_jobs"
 
     id = Column(Integer, primary_key=True, index=True)
-    job_id = Column(String(64), unique=True, index=True, nullable=False)
 
-    vulnerability_id = Column(Integer, ForeignKey("vulnerabilities.id"), nullable=False, index=True)
+    vulnerability_id = Column(
+        Integer, ForeignKey("vulnerabilities.id"), nullable=False, index=True
+    )
 
-    # queued | running | completed | failed | cancelled
-    status = Column(String(20), default="queued", nullable=False)
+    job_type = Column(String(80), nullable=False, default="closed_loop_validation")
 
-    # assessment | exploit_selection | twin_provisioning | twin_ready |
-    # module_inspection | validation | analysis | remediation |
-    # revalidation | report_generation | cleanup | completed | failed
-    stage = Column(String(40), default="assessment", nullable=False)
+    # queued -> running -> completed | failed
+    status = Column(String(20), nullable=False, default="queued", index=True)
 
-    progress = Column(Integer, default=0, nullable=False)
-    message = Column(Text, nullable=True)
+    dispatch_backend = Column(String(20), nullable=True)  # "celery" | "inline"
+    celery_task_id = Column(String(255), nullable=True)
 
-    mock_mode = Column(String(10), default="false", nullable=False)
-    # "celery" or "inline" -- which dispatch mechanism actually ran this
-    # job. Recorded even when TASK_QUEUE_BACKEND requested Celery but the
-    # broker was unreachable and the API route fell back to BackgroundTasks.
-    queue_backend = Column(String(20), default="inline", nullable=False)
-
-    result_json = Column(JSON, nullable=True)
-    error = Column(Text, nullable=True)
+    result_summary = Column(JSON, nullable=True)
+    error_message = Column(Text, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
     started_at = Column(DateTime(timezone=True), nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)
 
