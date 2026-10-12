@@ -33,7 +33,17 @@ class DigitalTwinClient:
         environment: str | None = None,
         ttl_seconds: int | None = None,
     ) -> dict[str, Any]:
-        """Request a twin environment from the configured provider."""
+        """Request a twin environment from the configured provider.
+
+        `version`, when given, does double duty on the Twin Generator
+        side: it feeds the Legacy Profiler check, and it also selects
+        *which* registry entry to use when more than one Docker image is
+        registered for the same CVE (e.g. a vulnerable and a fixed image
+        registered side by side for a remediation demo). Omit it to get
+        the Twin Generator's default behavior (most recently registered
+        image for the CVE) -- this is unchanged for any caller that
+        doesn't pass it.
+        """
 
         if self.mock_mode:
             return self._mock_twin(cve=cve, environment=environment)
@@ -81,34 +91,26 @@ class DigitalTwinClient:
             raise RuntimeError(f"Digital twin health check failed for {twin_external_id}") from exc
 
     async def destroy_twin(self, twin_external_id: str) -> dict[str, Any]:
-        """Destroy a twin environment."""
+        """Destroy a twin environment.
+
+        Twin Generator exposes POST /twins/{id}/destroy, not DELETE
+        /twins/{id} -- it never has. Every real (non-mock) call here was
+        silently failing with a 404/405 before this fix.
+        """
 
         if self.mock_mode:
-            return {
-                "id": twin_external_id,
-                "status": "destroyed",
-                "simulated": True,
-            }
+            return {"id": twin_external_id, "status": "destroyed", "simulated": True}
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(
-                    f"{self.base_url}/twins/{twin_external_id}/destroy"
-                )
+                response = await client.post(f"{self.base_url}/twins/{twin_external_id}/destroy")
                 response.raise_for_status()
-
                 data = response.json()
                 data.setdefault("simulated", False)
                 return data
-
         except httpx.HTTPError as exc:
-            logger.exception(
-                "Digital twin destruction failed for %s",
-                twin_external_id,
-            )
-            raise RuntimeError(
-                f"Digital twin destruction failed for {twin_external_id}"
-            ) from exc
+            logger.exception("Digital twin destruction failed for %s", twin_external_id)
+            raise RuntimeError(f"Digital twin destruction failed for {twin_external_id}") from exc
 
     @staticmethod
     def _mock_twin(cve: str, environment: str | None) -> dict[str, Any]:
