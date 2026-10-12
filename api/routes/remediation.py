@@ -1,276 +1,168 @@
 import logging
-from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from api.dependencies import get_db
-from api.schemas.autosectwin import RemediationCreate, RemediationResponse
-from database.models.approval import Approval
+from api.schemas.autosectwin import (
+    RemediationCreate,
+    RemediationExecuteRequest,
+    RemediationResponse,
+)
+from core.config import settings
 from database.models.remediation import Remediation
-from services.revalidation.revalidation_engine import RevalidationEngine
-from services.remediation.patch_executor import PatchExecutor
-router = APIRouter()
-logger = logging.getLogger(__name__)
-revalidation_engine = RevalidationEngine()
-class RevalidationRequest(BaseModel):
-    validation_score: float = Field(ge=0.0, le=1.0)
-    evidence: dict[str, object] | None = None
-patch_executor = PatchExecutor()
-
-@router.post("/", response_model=RemediationResponse)
-def create_remediation(
-    payload: RemediationCreate,
-    db: Session = Depends(get_db),
-) -> Remediation:
-    """Create a remediation only after explicit human approval."""
-
-    if not payload.recommendation_id:
-        raise HTTPException(
-            status_code=400,
-            detail="A recommendation_id is required before remediation.",
-        )
-
-    approval = (
-        db.query(Approval)
-        .filter(
-            Approval.vulnerability_id == payload.vulnerability_id,
-            Approval.status == "approved",
-        )
-        .order_by(Approval.decided_at.desc())
-        .first()
-    )
-
-    if not approval:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "Remediation requires an approved human approval "
-                "record for this vulnerability."
-            ),
-        )
-
-    approval_context = approval.context or {}
-    approved_recommendation_id = approval_context.get("recommendation_id")
-
-    if approved_recommendation_id is not None:
-        try:
-            approved_recommendation_id = int(approved_recommendation_id)
-        except (TypeError, ValueError):
-            raise HTTPException(
-                status_code=403,
-                detail="Approval contains an invalid recommendation reference.",
-            )
-
-        if approved_recommendation_id != payload.recommendation_id:
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    "The approved recommendation does not match the "
-                    "requested remediation recommendation."
-                ),
-            )
-
-    remediation = Remediation(
-    **payload.model_dump(),
-    status="approved",
-    evidence={
-        "approval_id": approval.id,
-        "approved_by": approval.decided_by,
-        "approval_context": approval_context,
-    },
+from services.remediation import status as remediation_status
+from services.remediation.tasks import (
+    execute_remediation_job,
+    execute_remediation_task,
+    revalidate_remediation_job,
+    revalidate_remediation_task,
 )
 
+router = APIRouter()
+logger = logging.getLogger(__name__)
+
+_IN_PROGRESS_STATUSES = {
+    remediation_status.QUEUED,
+    remediation_status.EXECUTING,
+    remediation_status.REVALIDATING,
+}
+
+_NOT_YET_EXECUTED_STATUSES = {
+    remediation_status.PLANNED,
+    remediation_status.APPROVED,
+    remediation_status.QUEUED,
+    remediation_status.EXECUTING,
+}
+
+
+@router.post("/", response_model=RemediationResponse)
+def create_remediation(payload: RemediationCreate, db: Session = Depends(get_db)) -> Remediation:
+    """Create a remediation action directly (bypassing the approval
+    workflow). Prefer POST /approvals/ + PATCH /approvals/{id}/decision
+    for anything that should actually be executed -- PatchExecutor refuses
+    to run a remediation with no approved Approval record regardless of
+    how the Remediation row was created.
+    """
+
+    remediation = Remediation(**payload.model_dump())
     db.add(remediation)
     db.commit()
     db.refresh(remediation)
-
-    logger.info(
-        "Created approved remediation %s using approval %s",
-        remediation.id,
-        approval.id,
-    )
-
+    logger.info("Created remediation %s", remediation.id)
     return remediation
 
-@router.post(
-    "/{remediation_id}/execute",
-    response_model=RemediationResponse,
-)
+
+@router.post("/{remediation_id}/execute", response_model=RemediationResponse, status_code=202)
 def execute_remediation(
     remediation_id: int,
+    payload: RemediationExecuteRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ) -> Remediation:
-    """Execute an explicitly approved remediation."""
+    """Execute a remediation: destroy the vulnerable twin, redeploy it at
+    fixed_version, and (by default) immediately revalidate. Dispatched as
+    a background job (Celery, falling back to inline BackgroundTasks) --
+    returns immediately with status=QUEUED; poll GET /remediations/{id}.
+    """
 
-    remediation = db.get(Remediation, remediation_id)
+    remediation = db.query(Remediation).filter(Remediation.id == remediation_id).first()
+    if remediation is None:
+        raise HTTPException(status_code=404, detail="Remediation not found")
 
-    if not remediation:
+    if remediation.status in _IN_PROGRESS_STATUSES:
         raise HTTPException(
-            status_code=404,
-            detail="Remediation not found",
+            status_code=409,
+            detail=f"Remediation {remediation_id} is already in progress (status={remediation.status}).",
         )
 
-    if remediation.status != "approved":
+    remediation.status = remediation_status.QUEUED
+    db.commit()
+    db.refresh(remediation)
+
+    if settings.TASK_QUEUE_BACKEND == "celery":
+        try:
+            execute_remediation_task.delay(
+                remediation_id, payload.fixed_version, payload.run_revalidation
+            )
+            return remediation
+        except Exception as exc:  # noqa: BLE001 - broker unreachable, etc.
+            logger.warning(
+                "Celery dispatch failed for remediation %s (%s); falling back to inline.",
+                remediation_id,
+                exc,
+            )
+
+    background_tasks.add_task(
+        execute_remediation_job,
+        remediation_id,
+        payload.fixed_version,
+        payload.run_revalidation,
+        None,
+    )
+    return remediation
+
+
+@router.post("/{remediation_id}/revalidate", response_model=RemediationResponse, status_code=202)
+def revalidate_remediation(
+    remediation_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> Remediation:
+    """Revalidate a remediation against its current target_twin_id by
+    actually re-running the same exploit (RevalidationEngine.run()) and
+    comparing it to the original validation.
+
+    This no longer accepts a validation_score from the caller -- the
+    validation score is produced by an actual exploit re-execution, not
+    supplied by whoever calls this endpoint.
+    """
+
+    remediation = db.query(Remediation).filter(Remediation.id == remediation_id).first()
+    if remediation is None:
+        raise HTTPException(status_code=404, detail="Remediation not found")
+
+    if remediation.status in _NOT_YET_EXECUTED_STATUSES:
         raise HTTPException(
             status_code=409,
             detail=(
-                f"Remediation cannot execute from status "
-                f"'{remediation.status}'. Expected 'approved'."
+                f"Remediation {remediation_id} has not been executed yet "
+                f"(status={remediation.status}); nothing to revalidate."
             ),
         )
 
-    # ------------------------------------------------------------
-    # APPROVED -> QUEUED
-    # ------------------------------------------------------------
-    remediation.status = "queued"
-
-    evidence = dict(remediation.evidence or {})
-    evidence["execution_lifecycle"] = {
-        "queued_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-    remediation.evidence = evidence
-
+    remediation.status = remediation_status.REVALIDATING
     db.commit()
     db.refresh(remediation)
 
-    # ------------------------------------------------------------
-    # QUEUED -> EXECUTING
-    # ------------------------------------------------------------
-    remediation.status = "executing"
+    if settings.TASK_QUEUE_BACKEND == "celery":
+        try:
+            revalidate_remediation_task.delay(remediation_id)
+            return remediation
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Celery dispatch failed for revalidation of remediation %s (%s); "
+                "falling back to inline.",
+                remediation_id,
+                exc,
+            )
 
-    evidence = dict(remediation.evidence or {})
-    evidence["execution_lifecycle"]["executing_at"] = (
-        datetime.now(timezone.utc).isoformat()
-    )
-
-    remediation.evidence = evidence
-
-    db.commit()
-    db.refresh(remediation)
-
-    # ------------------------------------------------------------
-    # Execute through the controlled patch handler
-    # ------------------------------------------------------------
-    approval_context = (
-        evidence.get("approval_context")
-        or {}
-    )
-
-    execution_context = dict(approval_context or {})
-
-    execution_context.setdefault(
-        "current_version",
-        execution_context.get("detected_version", "5.17.3"),
-    )
-
-    execution_context.setdefault(
-        "fixed_version",
-        execution_context.get("recommended_fixed_version", "5.17.6"),
-    )
-
-    result = patch_executor.execute(
-        vulnerability_id=remediation.vulnerability_id,
-        recommendation_id=remediation.recommendation_id,
-        action=remediation.action,
-        context=execution_context,
-    )
-
-    # ------------------------------------------------------------
-    # Persist execution result
-    # ------------------------------------------------------------
-    remediation.status = result.status
-
-    evidence = dict(remediation.evidence or {})
-
-    evidence["execution"] = result.evidence
-    evidence["execution_message"] = result.message
-    evidence["execution_lifecycle"]["completed_at"] = (
-        datetime.now(timezone.utc).isoformat()
-    )
-
-    remediation.evidence = evidence
-
-    if result.status == "executed":
-        remediation.applied_at = datetime.now(timezone.utc)
-
-    db.commit()
-    db.refresh(remediation)
-
-    logger.info(
-        "Remediation %s execution result: %s",
-        remediation.id,
-        remediation.status,
-    )
-
+    background_tasks.add_task(revalidate_remediation_job, remediation_id, None)
     return remediation
 
 
-@router.post("/{remediation_id}/revalidate", response_model=RemediationResponse)
-def revalidate_remediation(
-    remediation_id: int,
-    payload: RevalidationRequest,
-    db: Session = Depends(get_db),
-) -> Remediation:
-    """Verify remediation using post-remediation validation evidence."""
-
-    remediation = db.get(Remediation, remediation_id)
-
-    if not remediation:
-        raise HTTPException(
-            status_code=404,
-            detail="Remediation not found",
-        )
-
-    evidence = dict(payload.evidence or {})
-
-    evidence.update(
-        {
-            "revalidation_type": "post_remediation_validation",
-            "validation_score": payload.validation_score,
-            "remediation_id": remediation.id,
-            "vulnerability_id": remediation.vulnerability_id,
-        }
-    )
-
-    status, score, verification_evidence = revalidation_engine.verify(
-        payload.validation_score,
-        evidence=evidence,
-    )
-
-    remediation.status = status
-    remediation.verification_score = score
-    remediation.evidence = {
-        **(remediation.evidence or {}),
-        "revalidation": verification_evidence,
-    }
-
-    from datetime import datetime, timezone
-
-    remediation.verified_at = datetime.now(timezone.utc)
-
-    db.commit()
-    db.refresh(remediation)
-
-    logger.info(
-        "Remediation %s revalidated: status=%s score=%.3f",
-        remediation.id,
-        status,
-        score,
-    )
-
-    return remediation
-
-
-@router.get(
-    "/",
-    response_model=list[RemediationResponse],
-)
-def list_remediations(
-    db: Session = Depends(get_db),
-) -> list[Remediation]:
+@router.get("/", response_model=list[RemediationResponse])
+def list_remediations(db: Session = Depends(get_db)) -> list[Remediation]:
     """List remediation actions."""
 
     return db.query(Remediation).order_by(Remediation.id.desc()).all()
+
+
+@router.get("/{remediation_id}", response_model=RemediationResponse)
+def get_remediation(remediation_id: int, db: Session = Depends(get_db)) -> Remediation:
+    """Get a single remediation's current status/evidence."""
+
+    remediation = db.query(Remediation).filter(Remediation.id == remediation_id).first()
+    if remediation is None:
+        raise HTTPException(status_code=404, detail="Remediation not found")
+    return remediation
