@@ -29,6 +29,17 @@ class Settings(BaseSettings):
     METASPLOIT_RPC_PASSWORD: str = "msf"
     DIGITAL_TWIN_BASE_URL: str = "http://localhost:8081"
 
+    # Real (non-mock) exploit execution: driving Metasploit's console to run
+    # a module and watching for a resulting session, per the proven pattern
+    # in test_console_check.py -- module.execute()'s raw RPC response alone
+    # never carries session/proof evidence, only the console transcript does.
+    EXPLOIT_CONSOLE_POLL_INTERVAL_SECONDS: float = 2.0
+    EXPLOIT_CONSOLE_MAX_WAIT_SECONDS: float = 90.0
+    # After a session appears, how long verification commands (sysinfo/
+    # getuid/pwd or whoami/hostname/pwd) are allowed to take in total.
+    SESSION_VERIFICATION_TIMEOUT_SECONDS: float = 20.0
+    SESSION_SHELL_COMMAND_SETTLE_SECONDS: float = 2.0
+
     OPENAI_API_KEY: str | None = None
     CLAUDE_API_KEY: str | None = None
     GEMINI_API_KEY: str | None = None
@@ -54,7 +65,7 @@ class Settings(BaseSettings):
 
     # Whether the closed-loop orchestrator destroys the Digital Twin after
     # the workflow completes (success or failure).
-    ORCHESTRATION_DESTROY_TWIN_AFTER_RUN: bool = False
+    ORCHESTRATION_DESTROY_TWIN_AFTER_RUN: bool = True
 
     # Safety boundary: exploit execution is only permitted against hosts
     # that resolve to a Twin provisioned by TwinProvisioningService. This
@@ -88,6 +99,14 @@ class Settings(BaseSettings):
     # ("sqlite:///./autosectwin.db") instead of the composed Postgres URL
     # below. Leave unset in normal deployments.
     DATABASE_URL_OVERRIDE: str | None = None
+
+    # Code-change remediation (see services/remediation/code_remediation.py).
+    # Off by default: CODE_REMEDIATION_ALLOWED_ROOT must be explicitly set
+    # to an absolute path before any file may be proposed or modified.
+    # Only files inside this directory can ever be touched.
+    CODE_REMEDIATION_ALLOWED_ROOT: str | None = None
+    CODE_REMEDIATION_TEST_COMMAND: str = "pytest"
+    CODE_REMEDIATION_TEST_TIMEOUT_SECONDS: float = 120.0
 
     @property
     def DATABASE_URL(self) -> str:
