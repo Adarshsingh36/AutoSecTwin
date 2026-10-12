@@ -124,15 +124,16 @@ class ValidationOrchestrator:
                 vulnerability_id=exploit.vulnerability_id,
                 exploit_id=exploit.id,
                 twin_id=twin.id,
-                status="failed",
+                status="inconclusive",
                 validation_score=0.0,
                 analysis=(
-                    "Validation blocked before execution. "
+                    "Validation blocked before execution; this is not a confirmed negative. "
                     + " ".join(readiness.reasons)
                 ),
                 evidence={
                     "stage": "readiness",
                     "ready": False,
+                    "execution_outcome": "readiness_blocked",
                     "reasons": readiness.reasons,
                     "required_options": readiness.required_options,
                     "missing_options": readiness.missing_options,
