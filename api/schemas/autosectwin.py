@@ -223,6 +223,9 @@ class RecommendationResponse(BaseModel):
 
 class ApprovalCreate(BaseModel):
     vulnerability_id: int
+    recommendation_id: int | None = None
+    target_twin_id: int | None = None
+    fixed_version: str | None = None
     requested_action: str
     requested_by: str | None = None
     context: dict[str, Any] | None = None
@@ -232,12 +235,12 @@ class ApprovalDecision(BaseModel):
     status: str
     decided_by: str
     decision_reason: str | None = None
-    reviewer_input: dict[str, Any] | None = None
 
 
 class ApprovalResponse(ApprovalCreate):
     id: int
     status: str
+    remediation_id: int | None = None
     decided_by: str | None = None
     decision_reason: str | None = None
     created_at: datetime
@@ -248,23 +251,29 @@ class ApprovalResponse(ApprovalCreate):
 
 class RemediationCreate(BaseModel):
     vulnerability_id: int
-    recommendation_id: int
-    action: str
-    applied_by: str | None = None
-
-
-class RemediationResponse(BaseModel):
-    id: int
-    vulnerability_id: int
     recommendation_id: int | None = None
-    status: str
+    target_twin_id: int | None = None
     action: str
     applied_by: str | None = None
+
+
+class RemediationExecuteRequest(BaseModel):
+    fixed_version: str
+    run_revalidation: bool = True
+
+
+class RemediationResponse(RemediationCreate):
+    id: int
+    status: str
+    executor: str | None = None
+    handler: str | None = None
+    execution_authorized: bool = False
+    target_modified: bool = False
     verification_score: float
     evidence: dict[str, Any] | None = None
     created_at: datetime
-    applied_at: datetime | None = None
-    verified_at: datetime | None = None
+    execution_started_at: datetime | None = None
+    execution_completed_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -340,24 +349,54 @@ class TwinDestroyResponse(BaseModel):
     message: str
 
 
-
-class HumanReviewResponse(BaseModel):
+class CodeChangeProposeRequest(BaseModel):
     vulnerability_id: int
-    cve_id: str
-    title: str | None = None
-    severity: str | None = None
-    cvss_score: float | None = None
+    file_path: str
+    function_name: str
+    requested_by: str | None = None
 
-    vulnerability_explanation: dict[str, Any]
 
-    recommendation_id: int
-    recommendation_type: str
-    recommendation_title: str
-    recommendation_content: str
-    recommendation_provider: str
-    remediation_explanation: dict[str, Any]
+class CodeChangeProposalResponse(BaseModel):
+    approval_id: int
+    file_path: str
+    function_name: str
+    current_code: str
+    proposed_code: str
+    diff: str
+    explanation: str
+    requires_manual_authoring: bool
+    content_hash: str
 
-    human_approval_required: bool
-    approval_status: str
+
+class CodeChangeApplyRequest(BaseModel):
+    confirmed_content_hash: str
+
+
+class CodeChangeApplyResponse(BaseModel):
+    approval_id: int
+    applied: bool
+    tests_passed: bool | None
+    test_output: str
+    rolled_back: bool
+    file_path: str
+
+
+class OrchestrationRunRequest(BaseModel):
+    vulnerability_id: int
+    ttl_seconds: int | None = None
+
+
+class OrchestrationJobResponse(BaseModel):
+    id: int
+    vulnerability_id: int
+    job_type: str
+    status: str
+    dispatch_backend: str | None = None
+    celery_task_id: str | None = None
+    result_summary: dict[str, Any] | None = None
+    error_message: str | None = None
+    created_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
 
     model_config = {"from_attributes": True}
