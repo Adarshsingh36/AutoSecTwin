@@ -52,5 +52,6 @@ class LegacyCheckResponse(BaseModel):
     classification: LegacyFlag
     eol_date: Optional[date] = None
     matched_profile_id: Optional[int] = Field(
-        None, description="legacy_profiles.id matched, if any. Null when classification is 'unknown'."
+        None,
+        description="legacy_profiles.id matched, if any. Null when classification is 'unknown'.",
     )
