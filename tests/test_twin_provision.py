@@ -459,33 +459,31 @@ def test_database_commit_failure(client, db):
 # ---------------------------------------------------------
 
 def test_endpoint_saved(client, db):
-
     asset = create_asset(db)
     vulnerability = create_vulnerability(db, asset)
 
     response_data = SUCCESS_RESPONSE.copy()
-
-    response_data["ip_address"] = "10.10.10.10"
+    response_data["ip_address"] = "172.29.0.2"
+    response_data["endpoint"] = "127.0.0.1:60726"
 
     with patch(
         "integrations.digital_twin.twin_client.DigitalTwinClient.create_twin",
         new_callable=AsyncMock,
     ) as mock_create:
-
         mock_create.return_value = response_data
 
-        client.post(
+        response = client.post(
             "/twins/provision",
-            json={
-                "vulnerability_id": vulnerability.id,
-            },
+            json={"vulnerability_id": vulnerability.id},
         )
 
+    assert response.status_code == 200
+
     twin = db.query(Twin).first()
-
-    assert twin.endpoint == "10.10.10.10"
-
-    assert twin.ip_address == "10.10.10.10"
+    assert twin is not None
+    assert twin.endpoint == "127.0.0.1:60726"
+    assert twin.ip_address == "172.29.0.2"
+    assert twin.topology["endpoint"] == "127.0.0.1:60726"
 
 
 # ---------------------------------------------------------
