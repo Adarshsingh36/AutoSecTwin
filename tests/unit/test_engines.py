@@ -85,6 +85,93 @@ def test_validation_engine_scores_success_markers():
     assert "marker_hits=2" in analysis
 
 
+def test_validation_engine_timeout_is_never_scored_as_not_exploitable():
+    """A timeout is an absence of evidence, not evidence of absence --
+    must never be status='failed' (which means 'confirmed not
+    exploitable'), regardless of how low the numeric score computes to."""
+    status, score, analysis = ValidationEngine().analyze(
+        {
+            "exit_code": None,
+            "markers": [],
+            "stderr": "No definitive result within 90s.",
+            "execution_outcome": "timeout_inconclusive",
+        }
+    )
+
+    assert status == "inconclusive"
+    assert "execution_outcome=timeout_inconclusive" in analysis
+
+
+def test_validation_engine_readiness_block_is_never_verified():
+    status, score, analysis = ValidationEngine().analyze(
+        {
+            "stage": "readiness",
+            "ready": False,
+            "reasons": ["Metasploit module is not available"],
+            "execution_outcome": "readiness_blocked",
+        }
+    )
+
+    assert status == "inconclusive"
+    assert score == 0.0
+    assert "readiness" in analysis.lower()
+
+
+def test_validation_engine_connection_failure_is_never_verified():
+    status, score, analysis = ValidationEngine().analyze(
+        {
+            "exit_code": None,
+            "markers": [],
+            "stderr": "connection refused",
+            "execution_outcome": "confirmed_no_session",
+        }
+    )
+
+    assert status == "inconclusive"
+    assert score == 0.0
+
+
+def test_validation_engine_rpc_error_is_never_scored_as_not_exploitable():
+    status, score, analysis = ValidationEngine().analyze(
+        {
+            "exit_code": None,
+            "markers": [],
+            "stderr": "RPC connection refused",
+            "execution_outcome": "rpc_error",
+        }
+    )
+
+    assert status == "inconclusive"
+
+
+def test_validation_engine_confirmed_no_session_can_still_be_failed():
+    """Unlike timeout/rpc_error, a definitive negative from Metasploit
+    itself is allowed to score as 'failed' -- this is a real answer, not
+    an absence of one."""
+    status, score, analysis = ValidationEngine().analyze(
+        {
+            "exit_code": 0,
+            "markers": [],
+            "stderr": "exploit failed",
+            "execution_outcome": "confirmed_no_session",
+        }
+    )
+
+    assert status == "failed"
+
+
+def test_validation_engine_legacy_evidence_without_execution_outcome_unaffected():
+    """Evidence shapes that predate execution_outcome (e.g. MOCK_MODE's
+    simulated results) must score exactly as before -- this field is
+    purely additive."""
+    status, score, analysis = ValidationEngine().analyze(
+        {"exit_code": 0, "markers": ["shell_opened", "proof_obtained"], "stderr": ""}
+    )
+
+    assert status == "validated"
+    assert "execution_outcome=" not in analysis
+
+
 def test_confidence_fusion_normalizes_weights():
     engine = ConfidenceFusionEngine()
     score, weights = engine.fuse(
