@@ -25,6 +25,7 @@ import uuid
 from typing import TYPE_CHECKING, Dict, Optional
 
 import structlog
+from docker.errors import NotFound
 
 from twin_generator.docker_engine.config import DockerEngineSettings
 from twin_generator.docker_engine.image_inspector import get_declared_ports
@@ -276,25 +277,78 @@ class DockerTwinEngine:
         except Exception as exc:  # pragma: no cover - best-effort cleanup
             logger.warning("partial_network_cleanup_failed", error=str(exc))
 
-    def destroy_twin(self, twin_uuid: str, network_name: str) -> None:
-        """Tear down a twin's container and network.
+    def inspect_twin(self, twin_uuid: str) -> dict:
+        """Inspect the actual Docker container; never trust cached DB state."""
+        container_name = f"twin-{twin_uuid}"
 
-        Container name is derived the same way provision_twin() named it
-        (`twin-<uuid>`), so no separate container-id column is needed on
-        twin_instances. Idempotent: safe to call on an already-destroyed
-        twin (e.g. if the Twin Cleanup Manager and a manual destroy race).
-        """
+        try:
+            container = self._client.containers.get(container_name)
+        except NotFound:
+            return {
+                "exists": False,
+                "container_status": "missing",
+                "health": "unhealthy",
+                "image": None,
+            }
+
+        # Refresh the SDK object's state from Docker.
+        container.reload()
+
+        container_status = container.status
+        attrs = container.attrs or {}
+        config = attrs.get("Config") or {}
+        state = attrs.get("State") or {}
+
+        if container_status != "running":
+            health = "unhealthy"
+        elif config.get("Healthcheck"):
+            docker_health = (state.get("Health") or {}).get("Status")
+            if docker_health == "healthy":
+                health = "healthy"
+            elif docker_health == "starting":
+                health = "unknown"
+            else:
+                health = "unhealthy"
+        else:
+            # Consistent with the engine's existing provisioning behavior.
+            health = "healthy"
+
+        return {
+            "exists": True,
+            "container_status": container_status,
+            "health": health,
+            "image": config.get("Image"),
+        }
+
+    def destroy_twin(self, twin_uuid: str, network_name: str) -> None:
+        """Remove the twin container and network, surfacing real failures."""
         try:
             container = self._client.containers.get(f"twin-{twin_uuid}")
-            container.remove(force=True)
-        except Exception as exc:
-            from docker.errors import NotFound
-
-            if not isinstance(exc, NotFound):
-                logger.warning(
+        except NotFound:
+            logger.info("twin_container_already_absent", twin_uuid=twin_uuid)
+        else:
+            try:
+                container.remove(force=True)
+            except Exception as exc:
+                logger.error(
                     "twin_container_destroy_failed",
                     twin_uuid=twin_uuid,
                     error=str(exc),
                 )
+                raise DockerProvisioningError(
+                    f"Could not remove container for twin {twin_uuid}: {exc}"
+                ) from exc
 
-        self._networks.destroy_network(network_name)
+        try:
+            self._networks.destroy_network(network_name)
+        except Exception as exc:
+            logger.error(
+                "twin_network_destroy_failed",
+                twin_uuid=twin_uuid,
+                network_name=network_name,
+                error=str(exc),
+            )
+            raise DockerProvisioningError(
+                f"Container teardown may be partial; could not remove "
+                f"network {network_name}: {exc}"
+            ) from exc
