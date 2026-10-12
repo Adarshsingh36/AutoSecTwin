@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import traceback
 from typing import List
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from twin_generator.api.deps import get_orchestrator
@@ -20,6 +20,8 @@ from twin_generator.services.orchestrator import TwinOrchestrator
 from twin_generator.utils.enums import TwinStatus
 from twin_generator.utils.exceptions import TwinNotFoundError, TwinProvisioningError
 
+logger = structlog.get_logger(__name__)
+
 router = APIRouter(prefix="/twins", tags=["Twin Orchestrator"])
 
 
@@ -28,13 +30,11 @@ def create_twin(
     payload: TwinCreateRequest, orchestrator: TwinOrchestrator = Depends(get_orchestrator)
 ) -> TwinRead:
     try:
-        twin =orchestrator.create_twin(payload)
-        print("========== CREATE_TWIN RETURNED ==========")
-        print(twin)
-        
+        twin = orchestrator.create_twin(payload)
+        logger.info("twin_create_succeeded", twin_id=twin.id, cve=payload.cve)
     except Exception as exc:
-        traceback.print_exc()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc    
+        logger.exception("twin_create_failed", cve=payload.cve, error=str(exc))
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
     return TwinRead.model_validate(twin)
 
 
@@ -58,11 +58,25 @@ def get_twin_health(
     twin_id: int, orchestrator: TwinOrchestrator = Depends(get_orchestrator)
 ) -> TwinHealthResponse:
     try:
-        twin = orchestrator.get_twin(twin_id)
+        twin, inspection = orchestrator.refresh_twin_health(twin_id)
     except TwinNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except TwinProvisioningError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
     return TwinHealthResponse(
-        id=twin.id, uuid=twin.uuid, status=twin.status, health=twin.health, checked_at=datetime.now(timezone.utc)
+        id=twin.id,
+        uuid=twin.uuid,
+        status=twin.status,
+        health=twin.health,
+        checked_at=datetime.now(timezone.utc),
+        source="live_docker" if inspection is not None else "stored_state",
+        container_status=(
+            inspection["container_status"] if inspection is not None else None
+        ),
+        image=inspection["image"] if inspection is not None else None,
     )
 
 
