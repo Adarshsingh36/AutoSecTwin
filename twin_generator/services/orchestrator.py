@@ -39,6 +39,9 @@ from twin_generator.vm_engine.manager import VMTwinEngine
 
 logger = structlog.get_logger(__name__)
 
+DEFAULT_TTL_SECONDS = 3600
+
+
 class TwinOrchestrator:
     """Coordinates twin creation, lookup, health reporting, and on-demand destruction."""
 
@@ -61,11 +64,7 @@ class TwinOrchestrator:
 
     def create_twin(self, payload: TwinCreateRequest) -> TwinInstance:
         twin_uuid = uuid.uuid4()
-        destroy_at = (
-            datetime.now(timezone.utc) + timedelta(seconds=payload.ttl_seconds)
-            if payload.ttl_seconds is not None
-            else None
-        )
+        ttl = payload.ttl_seconds or DEFAULT_TTL_SECONDS
 
         twin = TwinInstance(
             uuid=twin_uuid,
@@ -75,9 +74,10 @@ class TwinOrchestrator:
             environment=(payload.environment or EnvironmentType.DOCKER).value,
             health=HealthStatus.UNKNOWN.value,
             created_at=datetime.now(timezone.utc),
-            destroy_at=destroy_at,
+            destroy_at=datetime.now(timezone.utc) + timedelta(seconds=ttl),
         )
         twin = self._repo.create(twin)
+        self._repo.add_log(twin.id, TwinLogEvent.CREATED, f"cve={payload.cve}")
 
         try:
             if payload.environment == EnvironmentType.VM:
@@ -116,7 +116,9 @@ class TwinOrchestrator:
         self, twin: TwinInstance, payload: TwinCreateRequest
     ) -> None:
         try:
-            image_entry = self._registry.resolve_image_for_cve(payload.cve)
+            image_entry = self._registry.resolve_image_for_cve(
+                payload.cve, version=payload.version
+            )
         except NoRegistryEntryForCveError:
             logger.info("no_docker_image_falling_back_to_vm", cve=payload.cve)
             self._repo.add_log(
@@ -125,6 +127,11 @@ class TwinOrchestrator:
             twin.environment = EnvironmentType.VM.value
             self._provision_vm(twin)
             return
+        # NoRegistryEntryForVersionError is deliberately NOT caught here --
+        # see its docstring. A specific version was explicitly requested,
+        # found absent, and silently substituting VM provisioning (or a
+        # different version) would hide a real registry gap rather than
+        # surface it.
 
         twin.status = TwinStatus.CREATING.value
         twin.environment = EnvironmentType.DOCKER.value
@@ -156,17 +163,21 @@ class TwinOrchestrator:
             f"container_id={result.container_id}",
         )
 
-    def _build_endpoint(self, result):
-        preferred_ports = [61616]
+    def _build_endpoint(self, result) -> Optional[str]:
+        """Build the validation endpoint, preferring ActiveMQ OpenWire."""
+        published_ports = result.published_ports or {}
+        host_address = self._docker_engine._settings.host_address
 
-        for container_port in preferred_ports:
-            host_port = result.published_ports.get(container_port)
+        # Prefer ActiveMQ OpenWire (container port 61616).
+        for container_port in (61616, "61616/tcp", "61616"):
+            host_port = published_ports.get(container_port)
             if host_port is not None:
-                return f"{self._docker_engine._settings.host_address}:{host_port}"
+                return f"{host_address}:{host_port}"
 
-        for container_port, host_port in result.published_ports.items():
+        # Fall back for other twin types.
+        for host_port in published_ports.values():
             if host_port is not None:
-                return f"{self._docker_engine._settings.host_address}:{host_port}"
+                return f"{host_address}:{host_port}"
 
         return None
 
@@ -214,6 +225,39 @@ class TwinOrchestrator:
             raise TwinNotFoundError(twin_id)
         return twin
 
+    def refresh_twin_health(self, twin_id: int):
+        """Refresh persisted health from Docker for a Docker-backed twin."""
+        twin = self.get_twin(twin_id)
+        if twin.environment != EnvironmentType.DOCKER.value:
+            return twin, None
+
+        try:
+            inspection = self._docker_engine.inspect_twin(str(twin.uuid))
+        except Exception as exc:
+            self._repo.add_log(
+                twin.id,
+                TwinLogEvent.ERROR,
+                f"live_health_inspection_failed={exc}",
+            )
+            raise TwinProvisioningError(
+                f"Could not verify live Docker health for twin {twin_id}: {exc}"
+            ) from exc
+
+        if not inspection["exists"]:
+            twin.health = HealthStatus.UNHEALTHY.value
+            twin.status = TwinStatus.DEGRADED.value
+        else:
+            twin.health = inspection["health"]
+            if (
+                inspection["container_status"] == "running"
+                and inspection["health"] == HealthStatus.HEALTHY.value
+            ):
+                twin.status = TwinStatus.RUNNING.value
+            else:
+                twin.status = TwinStatus.DEGRADED.value
+        self._repo.save(twin)
+        return twin, inspection
+
     def list_twins(self) -> Sequence[TwinInstance]:
         return self._repo.list_all()
 
@@ -230,9 +274,18 @@ class TwinOrchestrator:
                 self._docker_engine.destroy_twin(str(twin.uuid), twin.network)
             elif twin.environment == EnvironmentType.VM.value and twin.vm_name:
                 self._vm_engine.power_off(twin.vm_name)
-        except Exception as exc:  # pragma: no cover - best-effort teardown
-            logger.warning("twin_teardown_failed", twin_id=twin_id, error=str(exc))
-            self._repo.add_log(twin.id, TwinLogEvent.ERROR, f"teardown_warning={exc}")
+        except Exception as exc:
+            twin.status = TwinStatus.DEGRADED.value
+            twin.health = HealthStatus.UNHEALTHY.value
+            self._repo.save(twin)
+            self._repo.add_log(
+                twin.id,
+                TwinLogEvent.ERROR,
+                f"teardown_incomplete={exc}",
+            )
+            raise TwinProvisioningError(
+                f"Twin {twin_id} teardown did not complete successfully: {exc}"
+            ) from exc
 
         twin.status = TwinStatus.DESTROYED.value
         self._repo.save(twin)
