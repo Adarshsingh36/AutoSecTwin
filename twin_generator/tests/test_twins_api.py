@@ -38,6 +38,12 @@ def mock_docker_engine() -> MagicMock:
         healthy=True,
         status="running",
     )
+    engine.inspect_twin.return_value = {
+        "exists": True,
+        "container_status": "running",
+        "health": "healthy",
+        "image": "vulhub/log4j",
+    }
 
     return engine
 
@@ -149,6 +155,43 @@ def test_get_twin_health(
 
     assert response.status_code == 200
     assert response.json()["health"] == "healthy"
+    assert response.json()["source"] == "live_docker"
+    assert response.json()["container_status"] == "running"
+    assert response.json()["image"] == "vulhub/log4j"
+
+
+def test_get_twin_health_detects_missing_container(
+    client_with_mocked_engines: TestClient,
+    db_session: Session,
+    mock_docker_engine: MagicMock,
+) -> None:
+    db_session.add(
+        TwinRegistry(cve="CVE-MISSING", image="img/missing")
+    )
+    db_session.flush()
+    created = client_with_mocked_engines.post(
+        "/twins/create",
+        json={"cve": "CVE-MISSING"},
+    )
+    assert created.status_code == 201
+    twin_id = created.json()["id"]
+
+    mock_docker_engine.inspect_twin.return_value = {
+        "exists": False,
+        "container_status": "missing",
+        "health": "unhealthy",
+        "image": None,
+    }
+    response = client_with_mocked_engines.get(
+        f"/twins/{twin_id}/health"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["health"] == "unhealthy"
+    assert body["status"] == "degraded"
+    assert body["container_status"] == "missing"
+    assert body["source"] == "live_docker"
 
 
 def test_destroy_twin(
