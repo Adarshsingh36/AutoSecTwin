@@ -9,6 +9,7 @@ from core.config import settings
 from database.models.asset import Asset
 from database.models.twin import Twin
 from database.models.vulnerability import Vulnerability
+from services.common.version_utils import detect_version_from_image_tag
 
 from integrations.digital_twin.twin_client import DigitalTwinClient
 
@@ -35,7 +36,18 @@ class TwinProvisioningService:
         self,
         vulnerability_id: int,
         ttl_seconds: int | None = None,
+        version_override: str | None = None,
     ) -> Twin:
+        """Provision a Twin for this vulnerability's asset.
+
+        By default the version requested from the Twin Generator is the
+        asset's currently recorded version (asset.version). Pass
+        `version_override` to request a *specific* registered version
+        instead -- this is how remediation asks for the fixed image
+        (e.g. "5.17.6") without needing asset.version itself to already
+        reflect it, and without touching the CVE Image Registry's default
+        selection for any other caller.
+        """
 
         # ---------------------------------------------------
         # Lookup Vulnerability
@@ -84,7 +96,7 @@ class TwinProvisioningService:
                 cve=vulnerability.cve_id,
                 host=asset.hostname,
                 software=asset.software,
-                version=asset.version,
+                version=version_override or asset.version,
                 environment=asset.environment,
                 ttl_seconds=ttl_seconds,
             )
@@ -160,18 +172,39 @@ class TwinProvisioningService:
         twin: Twin,
         timeout_seconds: float | None = None,
         poll_interval_seconds: float | None = None,
+        expected_version: str | None = None,
     ) -> Twin:
         """Poll the Digital Twin Generator until the twin reports healthy.
 
         If the twin already reports a ready health value, returns
-        immediately. Never blocks indefinitely -- raises ``HTTPException``
-        (502) if the timeout elapses or the twin reports a failed state.
+        immediately. When `expected_version` is supplied, a live image tag is
+        retrieved and compared against it; if it cannot be established with the
+        current architecture, we raise a clear limitation instead of claiming a
+        version that was never observed.
         """
 
         timeout_seconds = timeout_seconds or settings.TWIN_HEALTH_TIMEOUT_SECONDS
         poll_interval_seconds = poll_interval_seconds or settings.TWIN_HEALTH_POLL_INTERVAL_SECONDS
 
         if (twin.health or "").lower() in READY_HEALTH_VALUES:
+            if expected_version is not None:
+                actual_version = detect_version_from_image_tag(getattr(twin, "twin_image", None))
+                if actual_version is None:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=(
+                            f"Replacement twin {twin.id} is ready but its live image version cannot "
+                            f"be established; cannot verify the approved fixed_version {expected_version!r}."
+                        ),
+                    )
+                if actual_version != expected_version:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=(
+                            f"Replacement twin {twin.id} image version mismatch: approved "
+                            f"{expected_version!r}, actual {actual_version!r}."
+                        ),
+                    )
             return twin
 
         if twin.external_twin_id is None:
@@ -189,9 +222,30 @@ class TwinProvisioningService:
                 continue
 
             health = str(health_data.get("health") or health_data.get("status") or "").lower()
+            live_image = health_data.get("twin_image") or getattr(twin, "twin_image", None)
+
+            if expected_version is not None:
+                actual_version = detect_version_from_image_tag(live_image)
+                if actual_version is None:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=(
+                            f"Replacement twin {twin.id} reached ready state but its fresh image metadata "
+                            f"does not expose a version; cannot verify the approved fixed_version {expected_version!r}."
+                        ),
+                    )
+                if actual_version != expected_version:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=(
+                            f"Replacement twin {twin.id} image version mismatch: approved "
+                            f"{expected_version!r}, actual {actual_version!r}."
+                        ),
+                    )
 
             if health in READY_HEALTH_VALUES:
                 twin.health = health
+                twin.twin_image = live_image or twin.twin_image
                 twin.status = "ready"
                 self.db.commit()
                 self.db.refresh(twin)
