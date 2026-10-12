@@ -19,6 +19,7 @@ from twin_generator.schemas.twin_registry import RegistryEntryCreate, RegistryEn
 from twin_generator.utils.exceptions import (
     DuplicateRegistryEntryError,
     NoRegistryEntryForCveError,
+    NoRegistryEntryForVersionError,
     RegistryEntryNotFoundError,
 )
 
@@ -79,16 +80,31 @@ class RegistryService:
         self._repo.delete(entry)
         logger.info("registry_entry_deleted", id=entry_id, cve=entry.cve)
 
-    def resolve_image_for_cve(self, cve):
-        print("=" * 60)
-        print("Searching registry for:", cve)
+    def resolve_image_for_cve(
+        self, cve: str, version: Optional[str] = None
+    ) -> TwinRegistry:
+        """Pick the Docker image registered for this CVE.
+
+        Without `version`, returns the most recently added mapping (the
+        pre-existing default behavior -- unchanged for any caller that
+        doesn't pass it). With `version`, returns the mapping whose
+        `version` matches exactly, so the same CVE can have both a
+        vulnerable and a fixed image registered side by side
+        (e.g. cve=CVE-2023-46604, version="5.17.3" vs version="5.17.6")
+        and a caller can request either explicitly without one silently
+        replacing the other.
+        """
 
         entries = self._repo.list_for_cve(cve)
 
-        print("Found:", entries)
-        print("=" * 60)
-
         if not entries:
             raise NoRegistryEntryForCveError(cve)
+
+        if version is not None:
+            matches = [entry for entry in entries if entry.version == version]
+            if not matches:
+                available = sorted({entry.version for entry in entries if entry.version})
+                raise NoRegistryEntryForVersionError(cve, version, available)
+            return matches[-1]
 
         return entries[-1]
