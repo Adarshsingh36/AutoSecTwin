@@ -84,7 +84,7 @@ class TwinListItem(BaseModel):
 
 
 class TwinHealthResponse(BaseModel):
-    """Response for GET /twins/{id}/health."""
+    """Result of a health check, including the source of its evidence."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -92,7 +92,13 @@ class TwinHealthResponse(BaseModel):
     uuid: uuid.UUID
     status: TwinStatus
     health: HealthStatus
-    checked_at: datetime = Field(..., description="Timestamp the health check was performed.")
+    checked_at: datetime = Field(
+        ...,
+        description="Timestamp the health check was performed.",
+    )
+    source: str = "stored_state"
+    container_status: Optional[str] = None
+    image: Optional[str] = None
 
 
 class TwinDestroyResponse(BaseModel):
