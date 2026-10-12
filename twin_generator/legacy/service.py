@@ -53,12 +53,12 @@ class LegacyProfilerService:
         )
 
         return LegacyCheckResponse(
-            software=software,
-            version=version,
-            classification=classification,
-            eol_date=profile.eol,
-            matched_profile_id=profile.id,
-        )
+    software=software,
+    version=version,
+    classification=classification,
+    eol_date=profile.eol if isinstance(profile.eol, date) else None,
+    matched_profile_id=profile.id,
+)
 
     @staticmethod
     def _classify(profile: LegacyProfile) -> LegacyFlag:
