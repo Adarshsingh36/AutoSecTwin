@@ -27,10 +27,20 @@ REMEDIATION_TYPES = (
 class RemediationEngine:
     """Builds remediation recommendations/plans and applies them to a Twin.
 
-    Every transition is explicit and persisted::
+    Covers non-Docker remediation types (config changes, firewall rules,
+    credential hardening, etc.) that don't have a real automated handler
+    yet -- see services/remediation/handlers/ for the one that does exist
+    (Docker). For those, this class's honest behavior is: recommend/plan
+    freely, and only ever claim "applied" when MOCK_MODE is on or a real
+    application channel exists; otherwise it stays "planned" and says so.
 
-        recommended -> planned -> applied -> verified
-                                        \\-> failed
+    This class does NOT verify anything -- there is no mark_verified()
+    here on purpose. "Verified" is only ever set by
+    services/remediation/pipeline.py, as the direct result of a real
+    RevalidationEngine.run() call. Transitions this class does manage::
+
+        recommended -> planned -> applied
+                              \\-> failed
 
     "Applying" a remediation never silently pretends success. In
     ``MOCK_MODE`` the compensating control is *simulated* against the mock
@@ -179,12 +189,8 @@ class RemediationEngine:
         logger.error("Remediation %s failed: %s", remediation.id, reason)
         return remediation
 
-    def mark_verified(self, db: Session, remediation: Remediation, verification_score: float) -> Remediation:
-        """Mark a remediation as verified after successful revalidation."""
-
-        remediation.status = "verified"
-        remediation.verification_score = verification_score
-        remediation.verified_at = datetime.now(timezone.utc)
-        db.commit()
-        db.refresh(remediation)
-        return remediation
+    # Note: there is deliberately no mark_verified()/similar method here.
+    # "Verified" may only ever be set as the result of a real revalidation
+    # run -- see services/remediation/pipeline.py:run_revalidation_only(),
+    # which is the sole place that assigns remediation_status.VERIFIED,
+    # and only when RevalidationEngine.run() returns result="resolved".
