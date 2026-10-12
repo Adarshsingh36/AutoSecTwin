@@ -45,6 +45,18 @@ class RevalidationEngine:
     RESOLVED_THRESHOLD = 0.35  # revalidation score below this => resolved
     IMPROVEMENT_THRESHOLD = 0.30  # meaningful score drop even if not fully resolved
 
+    # Must match services/validation/validation_engine.py's set of the same
+    # name -- an execution_outcome in here means the revalidation attempt
+    # itself didn't produce a real answer either way (timeout, RPC
+    # failure). Never allowed to compute to "resolved": that would mean
+    # "we couldn't tell, so we called it fixed", exactly the false
+    # verification this project exists to eliminate.
+    _INCONCLUSIVE_EXECUTION_OUTCOMES = {
+        "timeout_inconclusive",
+        "rpc_error",
+        "readiness_blocked",
+    }
+
     def __init__(self, orchestrator: ValidationOrchestrator | None = None) -> None:
         self.orchestrator = orchestrator or ValidationOrchestrator()
 
@@ -86,11 +98,25 @@ class RevalidationEngine:
         revalidation_score = float(revalidation.validation_score or 0.0)
         improvement = initial_score - revalidation_score
 
-        if revalidation.status != "validated" and revalidation_score <= self.RESOLVED_THRESHOLD:
+        execution_outcome = (revalidation.evidence or {}).get("execution_outcome")
+
+        if execution_outcome in self._INCONCLUSIVE_EXECUTION_OUTCOMES:
+            # The re-run itself didn't produce a real answer (timeout, RPC
+            # failure) -- this is an absence of evidence, never grounds to
+            # call the vulnerability resolved.
+            outcome = "inconclusive"
+        elif revalidation.status == "failed":
+            # A confirmed negative: the module ran to completion and did
+            # not get a session. A true "not exploitable anymore" answer.
             outcome = "resolved"
-        elif revalidation.status == "validated" and improvement < self.IMPROVEMENT_THRESHOLD:
+        elif revalidation.status == "validated":
+            # The exploit worked again, post-remediation -- the fix didn't
+            # hold, regardless of how much the score moved.
             outcome = "still_vulnerable"
         else:
+            # "inconclusive" from normal scoring (e.g. a confirmed-no-
+            # session result that still cleared the inconclusive score
+            # band) -- a real signal, just not a strong enough one either way.
             outcome = "inconclusive"
 
         comparison = (
