@@ -80,19 +80,19 @@ class MetasploitRPCClient:
         return token
 
     async def run_module(
-    self,
-    module_type: str,
-    module_name: str,
-    options: dict[str, Any],
-) -> dict[str, Any]:
-        """Execute a Metasploit module and collect its job completion state."""
+        self,
+        module_type: str,
+        module_name: str,
+        options: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Execute a Metasploit module."""
 
         if self.mock_mode:
             return self._mock_run_module(module_type, module_name, options)
 
         token = self._token or await self.login()
 
-        result = await self._call_raw(
+        return await self._call_raw(
             [
                 "module.execute",
                 token,
@@ -101,34 +101,6 @@ class MetasploitRPCClient:
                 options,
             ]
         )
-
-        logger.info("Metasploit module.execute response: %s", result)
-
-        job_id = result.get("job_id")
-
-        if job_id is None:
-            # Some Metasploit responses may not create a background job.
-            # Preserve the original response rather than inventing evidence.
-            return result
-
-        try:
-            job_id = int(job_id)
-        except (TypeError, ValueError):
-            logger.warning("Unexpected Metasploit job_id: %r", job_id)
-            return result
-
-        completion = await self.wait_for_job(job_id)
-
-        logger.info(
-            "Metasploit job %s completion response: %s",
-            job_id,
-            completion,
-        )
-
-        return {
-            **result,
-            "job_completion": completion,
-        }
 
     async def get_module_info(
         self,
@@ -150,6 +122,13 @@ class MetasploitRPCClient:
                 module_name,
             ]
         )
+    async def check_module(
+        self,
+        module_type: str,
+        module_name: str,
+        options: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Run a Metasploit module check without executing the exploit."""
 
         if self.mock_mode:
             return {"code": "vulnerable", "simulated": True}
@@ -333,6 +312,94 @@ class MetasploitRPCClient:
                 token,
                 console_id,
                 command,
+            ]
+        )
+
+    async def session_list(self) -> dict[str, Any]:
+        """List active Metasploit sessions.
+
+        Real response shape is ``{session_id: {"type": "meterpreter"|"shell",
+        "tunnel_peer": "host:port", "session_host": "...", "via_exploit":
+        "...", "info": "...", ...}, ...}`` keyed by session id (as a string
+        or int depending on MSF version -- callers should not assume
+        either).
+        """
+
+        if self.mock_mode:
+            return {}
+
+        token = self._token or await self.login()
+
+        return await self._call_raw(["session.list", token])
+
+    async def session_meterpreter_run_single(
+        self,
+        session_id: int,
+        command: str,
+    ) -> dict[str, Any]:
+        """Run one command on a meterpreter session and return its output
+        synchronously (unlike shell sessions, meterpreter_run_single does
+        not require a separate read call).
+        """
+
+        token = self._token or await self.login()
+
+        return await self._call_raw(
+            [
+                "session.meterpreter_run_single",
+                token,
+                session_id,
+                command,
+            ]
+        )
+
+    async def session_shell_write(
+        self,
+        session_id: int,
+        data: str,
+    ) -> dict[str, Any]:
+        """Write a command to a shell-type session."""
+
+        token = self._token or await self.login()
+
+        return await self._call_raw(
+            [
+                "session.shell_write",
+                token,
+                session_id,
+                data,
+            ]
+        )
+
+    async def session_shell_read(
+        self,
+        session_id: int,
+    ) -> dict[str, Any]:
+        """Read output from a shell-type session accumulated since the last read."""
+
+        token = self._token or await self.login()
+
+        return await self._call_raw(
+            [
+                "session.shell_read",
+                token,
+                session_id,
+            ]
+        )
+
+    async def destroy_console(self, console_id: str) -> dict[str, Any]:
+        """Destroy a Metasploit console, releasing it on the RPC daemon side."""
+
+        if self.mock_mode:
+            return {"result": "success", "simulated": True}
+
+        token = self._token or await self.login()
+
+        return await self._call_raw(
+            [
+                "console.destroy",
+                token,
+                console_id,
             ]
         )
 
