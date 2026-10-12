@@ -19,6 +19,7 @@ from twin_generator.utils.enums import EnvironmentType
 from twin_generator.utils.exceptions import (
     DuplicateRegistryEntryError,
     NoRegistryEntryForCveError,
+    NoRegistryEntryForVersionError,
     RegistryEntryNotFoundError,
 )
 
@@ -166,6 +167,61 @@ class TestResolveImageForCve:
         result = service.resolve_image_for_cve("CVE-1")
 
         assert result.image == "new/image"
+
+    def test_returns_most_recent_mapping_when_version_omitted(
+        self, service: RegistryService
+    ) -> None:
+        vulnerable = TwinRegistry(id=1, cve="CVE-2023-46604", image="autosectwin/activemq", version="5.17.3")
+        fixed = TwinRegistry(id=2, cve="CVE-2023-46604", image="apache/activemq-classic", version="5.17.6")
+        service._repo.list_for_cve.return_value = [vulnerable, fixed]
+
+        result = service.resolve_image_for_cve("CVE-2023-46604")
+
+        assert result.image == "apache/activemq-classic"
+
+    def test_selects_vulnerable_version_explicitly(self, service: RegistryService) -> None:
+        vulnerable = TwinRegistry(id=1, cve="CVE-2023-46604", image="autosectwin/activemq", version="5.17.3")
+        fixed = TwinRegistry(id=2, cve="CVE-2023-46604", image="apache/activemq-classic", version="5.17.6")
+        service._repo.list_for_cve.return_value = [vulnerable, fixed]
+
+        result = service.resolve_image_for_cve("CVE-2023-46604", version="5.17.3")
+
+        assert result.image == "autosectwin/activemq"
+        assert result.version == "5.17.3"
+
+    def test_selects_fixed_version_explicitly(self, service: RegistryService) -> None:
+        vulnerable = TwinRegistry(id=1, cve="CVE-2023-46604", image="autosectwin/activemq", version="5.17.3")
+        fixed = TwinRegistry(id=2, cve="CVE-2023-46604", image="apache/activemq-classic", version="5.17.6")
+        service._repo.list_for_cve.return_value = [vulnerable, fixed]
+
+        result = service.resolve_image_for_cve("CVE-2023-46604", version="5.17.6")
+
+        assert result.image == "apache/activemq-classic"
+        assert result.version == "5.17.6"
+
+    def test_requesting_vulnerable_version_never_returns_fixed_image(
+        self, service: RegistryService
+    ) -> None:
+        """Regression guard: picking a specific version must never
+        silently fall through to a different one, in either direction."""
+        vulnerable = TwinRegistry(id=1, cve="CVE-2023-46604", image="autosectwin/activemq", version="5.17.3")
+        fixed = TwinRegistry(id=2, cve="CVE-2023-46604", image="apache/activemq-classic", version="5.17.6")
+        service._repo.list_for_cve.return_value = [vulnerable, fixed]
+
+        result = service.resolve_image_for_cve("CVE-2023-46604", version="5.17.3")
+
+        assert result.image != "apache/activemq-classic"
+
+    def test_raises_specific_error_when_cve_known_but_version_unregistered(
+        self, service: RegistryService
+    ) -> None:
+        vulnerable = TwinRegistry(id=1, cve="CVE-2023-46604", image="autosectwin/activemq", version="5.17.3")
+        service._repo.list_for_cve.return_value = [vulnerable]
+
+        with pytest.raises(NoRegistryEntryForVersionError) as exc_info:
+            service.resolve_image_for_cve("CVE-2023-46604", version="5.17.6")
+
+        assert exc_info.value.available_versions == ["5.17.3"]
 
     def test_raises_when_no_mapping(self, service: RegistryService) -> None:
         service._repo.list_for_cve.return_value = []
