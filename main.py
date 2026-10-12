@@ -5,6 +5,7 @@ from sqlalchemy import text
 
 from api.routes import approvals, exploits, legacy, recommendation, remediation, reports, trust, validations, vulnerabilities
 from api.routes import confidence, learning, orchestration, twins
+from api.routes import code_remediation
 from core.config import settings
 from core.exceptions import ASDEError, asde_exception_handler, not_found_handler
 from database.session import SessionLocal
@@ -30,6 +31,7 @@ app.include_router(reports.router, prefix="/reports", tags=["Reports"])
 app.include_router(twins.router, prefix="/twins",tags=["Twins"])
 app.include_router(learning.router, prefix="/learning", tags=["Continuous Learning"])
 app.include_router(orchestration.router, prefix="/orchestration", tags=["Orchestration"])
+app.include_router(code_remediation.router, prefix="/code-remediation", tags=["Code Remediation"])
 
 
 def check_database_connection() -> bool:
