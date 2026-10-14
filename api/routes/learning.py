@@ -3,7 +3,7 @@ import logging
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from api.dependencies import get_db
+from api.dependencies import get_db, pagination
 from api.schemas.autosectwin import LearningEventCreate, LearningEventResponse
 from database.models.learning_event import LearningEvent
 from services.learning import ContinuousLearningEngine
@@ -28,7 +28,10 @@ def create_learning_event(payload: LearningEventCreate, db: Session = Depends(ge
 
 
 @router.get("/", response_model=list[LearningEventResponse])
-def list_learning_events(db: Session = Depends(get_db)) -> list[LearningEvent]:
+def list_learning_events(
+    db: Session = Depends(get_db),
+    page: tuple[int, int] = Depends(pagination),
+) -> list[LearningEvent]:
     """List continuous learning events."""
 
-    return db.query(LearningEvent).order_by(LearningEvent.id.desc()).all()
+    return db.query(LearningEvent).order_by(LearningEvent.id.desc()).limit(page[0]).offset(page[1]).all()
