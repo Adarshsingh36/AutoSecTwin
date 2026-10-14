@@ -3,7 +3,7 @@ import logging
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from api.dependencies import get_db
+from api.dependencies import get_db, pagination
 from api.schemas.autosectwin import ConfidenceCalculateResponse, ConfidenceRequest, ConfidenceResponse
 from database.models.confidence import Confidence
 from services.confidence.fusion import ConfidenceFusionEngine, FusionInputs
@@ -82,7 +82,10 @@ def calculate_confidence(payload: ConfidenceRequest) -> ConfidenceCalculateRespo
 
 
 @router.get("/", response_model=list[ConfidenceResponse])
-def list_confidences(db: Session = Depends(get_db)) -> list[Confidence]:
+def list_confidences(
+    db: Session = Depends(get_db),
+    page: tuple[int, int] = Depends(pagination),
+) -> list[Confidence]:
     """List confidence results."""
 
-    return db.query(Confidence).order_by(Confidence.id.desc()).all()
+    return db.query(Confidence).order_by(Confidence.id.desc()).limit(page[0]).offset(page[1]).all()
