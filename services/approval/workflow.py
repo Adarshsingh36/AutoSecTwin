@@ -18,6 +18,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from core.exceptions import ASDEError
@@ -200,6 +201,7 @@ def request_approval(
     return approval
 
 
+
 def decide(
     db: Session,
     approval_id: int,
@@ -207,70 +209,142 @@ def decide(
     decided_by: str,
     decision_reason: Optional[str] = None,
 ) -> Approval:
-    """Record a human decision. "rejected" stops here -- no Remediation is
-    ever created for a rejected approval. "approved" creates the
-    Remediation row (status=APPROVED) and links it back onto the approval,
-    but does not execute it -- see api/routes/approvals.py for dispatch.
-    """
+    """Record a human decision and atomically create/link remediation."""
 
     if decision not in ("approved", "rejected"):
-        raise ApprovalWorkflowError(f"decision must be 'approved' or 'rejected', got {decision!r}.")
-
-    approval = db.query(Approval).filter(Approval.id == approval_id).first()
-    if approval is None:
-        raise ApprovalWorkflowError(f"Approval {approval_id} not found.")
-
-    if approval.status != "pending":
         raise ApprovalWorkflowError(
-            f"Approval {approval_id} has already been decided (status={approval.status!r})."
+            f"decision must be 'approved' or 'rejected', got {decision!r}."
         )
 
-    approval.status = decision
-    approval.decided_by = decided_by
-    approval.decision_reason = decision_reason
-    approval.decided_at = datetime.now(timezone.utc)
+    if not decided_by or not decided_by.strip():
+        raise ApprovalWorkflowError("decided_by must identify the human reviewer.")
 
-    if decision == "rejected":
+    try:
+        decided_at = datetime.now(timezone.utc)
+
+        updated = db.execute(
+            update(Approval)
+            .where(
+                Approval.id == approval_id,
+                Approval.status == "pending",
+            )
+            .values(
+                status=decision,
+                decided_by=decided_by,
+                decision_reason=decision_reason,
+                decided_at=decided_at,
+            )
+            .execution_options(synchronize_session=False)
+        )
+
+        if updated.rowcount != 1:
+            db.rollback()
+            existing = (
+                db.query(Approval)
+                .filter(Approval.id == approval_id)
+                .first()
+            )
+            if existing is None:
+                raise ApprovalWorkflowError(
+                    f"Approval {approval_id} not found."
+                )
+            raise ApprovalWorkflowError(
+                f"Approval {approval_id} has already been decided "
+                f"(status={existing.status!r})."
+            )
+
+        approval = (
+            db.query(Approval)
+            .filter(Approval.id == approval_id)
+            .populate_existing()
+            .first()
+        )
+
+        if approval is None:
+            raise ApprovalWorkflowError(
+                f"Approval {approval_id} not found."
+            )
+
+        # Rejection is final: no remediation is created.
+        if decision == "rejected":
+            db.commit()
+            db.refresh(approval)
+            logger.info(
+                "Approval %s rejected by %s: %s",
+                approval_id,
+                decided_by,
+                decision_reason,
+            )
+            return approval
+
+        # An approved action must have a recorded target and fixed version.
+        context = approval.context or {}
+        fixed_version = context.get("fixed_version")
+
+        if approval.target_twin_id is None:
+            raise ApprovalWorkflowError(
+                "Cannot approve remediation without a target twin."
+            )
+
+        if not isinstance(fixed_version, str) or not fixed_version.strip():
+            raise ApprovalWorkflowError(
+                "Cannot approve remediation without a fixed version."
+            )
+
+        recommendation_title = None
+        if approval.recommendation_id is not None:
+            recommendation = (
+                db.query(Recommendation)
+                .filter(
+                    Recommendation.id == approval.recommendation_id
+                )
+                .first()
+            )
+            if recommendation is None:
+                raise ApprovalWorkflowError(
+                    "The linked recommendation no longer exists."
+                )
+            if recommendation.vulnerability_id != approval.vulnerability_id:
+                raise ApprovalWorkflowError(
+                    "The recommendation does not match the approval vulnerability."
+                )
+            recommendation_title = recommendation.title
+
+        action_description = (
+            f"Upgrade to {fixed_version}"
+            if fixed_version
+            else (recommendation_title or "Apply recommended remediation")
+        )
+
+        remediation = Remediation(
+            vulnerability_id=approval.vulnerability_id,
+            recommendation_id=approval.recommendation_id,
+            target_twin_id=approval.target_twin_id,
+            action=action_description,
+            status=remediation_status.APPROVED,
+            applied_by=decided_by,
+        )
+        db.add(remediation)
+
+        # Obtain the generated ID without committing yet.
+        db.flush()
+
+        approval.remediation_id = remediation.id
+
+        # One transaction: decision + remediation + linkage.
         db.commit()
         db.refresh(approval)
-        logger.info("Approval %s rejected by %s: %s", approval_id, decided_by, decision_reason)
+
+        logger.info(
+            "Approval %s approved by %s: remediation=%s twin=%s version=%s",
+            approval_id,
+            decided_by,
+            remediation.id,
+            approval.target_twin_id,
+            fixed_version,
+        )
         return approval
 
-    fixed_version = (approval.context or {}).get("fixed_version")
-    recommendation_title = None
-    if approval.recommendation_id is not None:
-        recommendation = (
-            db.query(Recommendation).filter(Recommendation.id == approval.recommendation_id).first()
-        )
-        recommendation_title = recommendation.title if recommendation else None
-
-    action_description = (
-        f"Upgrade to {fixed_version}" if fixed_version else (recommendation_title or "Apply recommended remediation")
-    )
-
-    remediation = Remediation(
-        vulnerability_id=approval.vulnerability_id,
-        recommendation_id=approval.recommendation_id,
-        target_twin_id=approval.target_twin_id,
-        action=action_description,
-        status=remediation_status.APPROVED,
-        applied_by=decided_by,
-    )
-    db.add(remediation)
-    db.commit()
-    db.refresh(remediation)
-
-    approval.remediation_id = remediation.id
-    db.commit()
-    db.refresh(approval)
-
-    logger.info(
-        "Approval %s approved by %s: created remediation %s (target_twin=%s, fixed_version=%s)",
-        approval_id,
-        decided_by,
-        remediation.id,
-        approval.target_twin_id,
-        fixed_version,
-    )
-
-    return approval
+    except Exception:
+        db.rollback()
+        raise
