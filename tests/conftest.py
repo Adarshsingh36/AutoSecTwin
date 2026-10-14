@@ -46,6 +46,7 @@ def client(TestSessionLocal, monkeypatch):
     from main import app
 
     monkeypatch.setattr(settings, "MOCK_MODE", True)
+    monkeypatch.setattr(settings, "AUTH_ENABLED", False)
 
     def override_get_db():
         session = TestSessionLocal()
