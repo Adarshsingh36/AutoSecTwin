@@ -64,6 +64,9 @@ class MetasploitRPCClient:
             self._token = "mock-token"
             return self._token
 
+        if not self.username or not self.password:
+            raise RuntimeError("Metasploit RPC credentials are not configured")
+
         payload = ["auth.login", self.username, self.password]
 
         result = await self._call_raw(payload)
