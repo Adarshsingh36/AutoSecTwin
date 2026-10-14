@@ -366,6 +366,9 @@ class CodeChangeProposalResponse(BaseModel):
     explanation: str
     requires_manual_authoring: bool
     content_hash: str
+    start_line: int = 0
+    end_line: int = 0
+    symbol_name: str = ""
 
 
 class CodeChangeApplyRequest(BaseModel):
@@ -400,3 +403,15 @@ class OrchestrationJobResponse(BaseModel):
     completed_at: datetime | None = None
 
     model_config = {"from_attributes": True}
+
+
+class AuthTokenRequest(BaseModel):
+    username: str
+    password: str
+
+
+class AuthTokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    roles: list[str]
