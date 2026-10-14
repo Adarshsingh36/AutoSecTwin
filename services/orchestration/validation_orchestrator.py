@@ -160,6 +160,7 @@ class ValidationOrchestrator:
         execution = await self.executor.execute(
             exploit=exploit,
             twin=twin,
+            module_options=inspection.options,
         )
 
         # --------------------------------------------------
