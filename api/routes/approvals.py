@@ -3,9 +3,10 @@ import logging
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from api.dependencies import get_db
+from api.dependencies import get_db, pagination
 from api.schemas.autosectwin import ApprovalCreate, ApprovalDecision, ApprovalResponse
 from core.config import settings
+from core.security import Principal, require_role
 from database.models.approval import Approval
 from database.models.legacy import SpecialistQueue
 from database.models.trust import HallucinationLog
@@ -23,7 +24,11 @@ def _to_response(approval: Approval) -> ApprovalResponse:
 
 
 @router.post("/", response_model=ApprovalResponse)
-def create_approval(payload: ApprovalCreate, db: Session = Depends(get_db)) -> ApprovalResponse:
+def create_approval(
+    payload: ApprovalCreate,
+    db: Session = Depends(get_db),
+    _: Principal = Depends(require_role("analyst", "operator", "admin")),
+) -> ApprovalResponse:
     """Create a human approval request.
 
     Builds the full review package (vulnerability, exploit evidence,
@@ -50,6 +55,7 @@ def decide_approval(
     payload: ApprovalDecision,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
+    _: Principal = Depends(require_role("approver", "admin")),
 ) -> ApprovalResponse:
     """Record a human approval decision.
 
@@ -106,21 +112,29 @@ def _dispatch_remediation_execution(
 
 
 @router.get("/", response_model=list[ApprovalResponse])
-def list_approvals(db: Session = Depends(get_db)) -> list[ApprovalResponse]:
+def list_approvals(
+    db: Session = Depends(get_db),
+    page: tuple[int, int] = Depends(pagination),
+) -> list[ApprovalResponse]:
     """List approval requests."""
 
-    approvals = db.query(Approval).order_by(Approval.id.desc()).all()
+    approvals = db.query(Approval).order_by(Approval.id.desc()).limit(page[0]).offset(page[1]).all()
     return [_to_response(a) for a in approvals]
 
 
 @router.get("/legacy")
-def list_legacy_review_queue(db: Session = Depends(get_db)) -> list[dict[str, object]]:
+def list_legacy_review_queue(
+    db: Session = Depends(get_db),
+    page: tuple[int, int] = Depends(pagination),
+) -> list[dict[str, object]]:
     """List pending legacy specialist review items."""
 
     rows = (
         db.query(SpecialistQueue)
         .filter(SpecialistQueue.queue_type == "legacy", SpecialistQueue.status == "pending")
         .order_by(SpecialistQueue.id.desc())
+        .limit(page[0])
+        .offset(page[1])
         .all()
     )
     return [
@@ -137,13 +151,18 @@ def list_legacy_review_queue(db: Session = Depends(get_db)) -> list[dict[str, ob
 
 
 @router.get("/hallucinations")
-def list_hallucination_review_queue(db: Session = Depends(get_db)) -> list[dict[str, object]]:
+def list_hallucination_review_queue(
+    db: Session = Depends(get_db),
+    page: tuple[int, int] = Depends(pagination),
+) -> list[dict[str, object]]:
     """List pending hallucination review items."""
 
     rows = (
         db.query(HallucinationLog)
         .filter(HallucinationLog.review_status == "pending")
         .order_by(HallucinationLog.id.desc())
+        .limit(page[0])
+        .offset(page[1])
         .all()
     )
     return [
