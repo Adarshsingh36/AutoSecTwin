@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from services.twin_provisioning_service import TwinProvisioningService
-from api.dependencies import get_db
+from api.dependencies import get_db, pagination
 from api.schemas.autosectwin import (
     TwinCreate,
     TwinResponse,
@@ -12,6 +12,7 @@ from api.schemas.autosectwin import (
     TwinProvisionResponse,
     TwinDestroyResponse,
 )
+from core.security import Principal, require_role
 from database.models.twin import Twin
 
 router = APIRouter()
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
 async def provision_twin(
     payload: TwinProvisionRequest,
     db: Session = Depends(get_db),
+    _: Principal = Depends(require_role("operator", "admin")),
 ) -> Twin:
 
     service = TwinProvisioningService(db)
@@ -38,10 +40,13 @@ async def provision_twin(
 
 
 @router.get("/", response_model=list[TwinResponse])
-def list_twins(db: Session = Depends(get_db)) -> list[Twin]:
+def list_twins(
+    db: Session = Depends(get_db),
+    page: tuple[int, int] = Depends(pagination),
+) -> list[Twin]:
     """List digital twins."""
 
-    return db.query(Twin).order_by(Twin.id.desc()).all()
+    return db.query(Twin).order_by(Twin.id.desc()).limit(page[0]).offset(page[1]).all()
 
 
 @router.get("/{twin_id}", response_model=TwinResponse)
@@ -58,6 +63,7 @@ def get_twin(twin_id: int, db: Session = Depends(get_db)) -> Twin:
 async def destroy_twin(
     twin_id: int,
     db: Session = Depends(get_db),
+    _: Principal = Depends(require_role("operator", "admin")),
 ) -> TwinDestroyResponse:
     """
     Destroy a provisioned digital twin.
