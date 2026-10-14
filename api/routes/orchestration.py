@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from api.dependencies import get_db
 from api.schemas.autosectwin import OrchestrationJobResponse, OrchestrationRunRequest
 from core.config import settings
+from core.security import Principal, require_role
 from database.models.orchestration_job import OrchestrationJob
 from database.models.vulnerability import Vulnerability
 from services.orchestration.tasks import execute_orchestration_job, run_closed_loop_task
@@ -20,6 +21,7 @@ def run_orchestration(
     payload: OrchestrationRunRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
+    _: Principal = Depends(require_role("operator", "admin")),
 ) -> OrchestrationJob:
     """
     Dispatch a closed-loop orchestration run for a vulnerability.
