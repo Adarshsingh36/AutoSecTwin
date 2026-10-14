@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse, Response
 from sqlalchemy.orm import Session
 
-from api.dependencies import get_db
+from api.dependencies import get_db, pagination
 from api.schemas.autosectwin import ReportCreate, ReportResponse
 from database.models.remediation import Remediation
 from database.models.report import Report
@@ -84,10 +84,13 @@ def create_report(payload: ReportCreate, db: Session = Depends(get_db)) -> Repor
 
 
 @router.get("/", response_model=list[ReportResponse])
-def list_reports(db: Session = Depends(get_db)) -> list[Report]:
+def list_reports(
+    db: Session = Depends(get_db),
+    page: tuple[int, int] = Depends(pagination),
+) -> list[Report]:
     """List generated reports."""
 
-    return db.query(Report).order_by(Report.id.desc()).all()
+    return db.query(Report).order_by(Report.id.desc()).limit(page[0]).offset(page[1]).all()
 
 
 @router.get("/{report_id}", response_model=ReportResponse)
