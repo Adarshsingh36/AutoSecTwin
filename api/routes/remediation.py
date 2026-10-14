@@ -3,13 +3,14 @@ import logging
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from api.dependencies import get_db
+from api.dependencies import get_db, pagination
 from api.schemas.autosectwin import (
     RemediationCreate,
     RemediationExecuteRequest,
     RemediationResponse,
 )
 from core.config import settings
+from core.security import Principal, require_role
 from database.models.remediation import Remediation
 from services.remediation import status as remediation_status
 from services.remediation.tasks import (
@@ -37,7 +38,11 @@ _NOT_YET_EXECUTED_STATUSES = {
 
 
 @router.post("/", response_model=RemediationResponse)
-def create_remediation(payload: RemediationCreate, db: Session = Depends(get_db)) -> Remediation:
+def create_remediation(
+    payload: RemediationCreate,
+    db: Session = Depends(get_db),
+    _: Principal = Depends(require_role("analyst", "operator", "admin")),
+) -> Remediation:
     """Create a remediation action directly (bypassing the approval
     workflow). Prefer POST /approvals/ + PATCH /approvals/{id}/decision
     for anything that should actually be executed -- PatchExecutor refuses
@@ -59,6 +64,7 @@ def execute_remediation(
     payload: RemediationExecuteRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
+    _: Principal = Depends(require_role("operator", "admin")),
 ) -> Remediation:
     """Execute a remediation: destroy the vulnerable twin, redeploy it at
     fixed_version, and (by default) immediately revalidate. Dispatched as
@@ -108,6 +114,7 @@ def revalidate_remediation(
     remediation_id: int,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
+    _: Principal = Depends(require_role("operator", "admin")),
 ) -> Remediation:
     """Revalidate a remediation against its current target_twin_id by
     actually re-running the same exploit (RevalidationEngine.run()) and
@@ -152,10 +159,13 @@ def revalidate_remediation(
 
 
 @router.get("/", response_model=list[RemediationResponse])
-def list_remediations(db: Session = Depends(get_db)) -> list[Remediation]:
+def list_remediations(
+    db: Session = Depends(get_db),
+    page: tuple[int, int] = Depends(pagination),
+) -> list[Remediation]:
     """List remediation actions."""
 
-    return db.query(Remediation).order_by(Remediation.id.desc()).all()
+    return db.query(Remediation).order_by(Remediation.id.desc()).limit(page[0]).offset(page[1]).all()
 
 
 @router.get("/{remediation_id}", response_model=RemediationResponse)
