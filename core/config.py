@@ -1,7 +1,7 @@
-import http
+import json
 import re
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -18,15 +18,25 @@ class Settings(BaseSettings):
     DB_PORT: int = 5432
     DB_NAME: str = "asde_db"
     DB_USER: str = "postgres"
-    DB_PASSWORD: str = "root"
+    DB_PASSWORD: str | None = None
+
+    AUTH_ENABLED: bool = True
+    AUTH_SECRET_KEY: str | None = None
+    AUTH_TOKEN_TTL_SECONDS: int = 3600
+    # JSON object: {"username": {"password_hash": "...", "roles": ["admin"]}}
+    AUTH_USERS_JSON: str = "{}"
+    # JSON object: {"sha256(token)": ["admin"]}; useful for service tokens.
+    AUTH_STATIC_TOKEN_HASHES_JSON: str = "{}"
+    # Optional plain dev/test token. Refused when ENVIRONMENT=production.
+    AUTH_DEV_ADMIN_TOKEN: str | None = None
 
     NVD_API_BASE_URL: str = "https://services.nvd.nist.gov/rest/json/cves/2.0"
     EPSS_API_BASE_URL: str = "https://api.first.org/data/v1/epss"
     EXPLOITDB_BASE_URL: str = "https://www.exploit-db.com"
     CISA_KEV_URL: str = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
     METASPLOIT_RPC_URL: str = "http://localhost:55552/api/"
-    METASPLOIT_RPC_USERNAME: str = "msf"
-    METASPLOIT_RPC_PASSWORD: str = "msf"
+    METASPLOIT_RPC_USERNAME: str | None = None
+    METASPLOIT_RPC_PASSWORD: str | None = None
     DIGITAL_TWIN_BASE_URL: str = "http://localhost:8081"
 
     # Real (non-mock) exploit execution: driving Metasploit's console to run
@@ -112,6 +122,8 @@ class Settings(BaseSettings):
     def DATABASE_URL(self) -> str:
         if self.DATABASE_URL_OVERRIDE:
             return self.DATABASE_URL_OVERRIDE
+        if not self.DB_PASSWORD:
+            raise ValueError("DB_PASSWORD must be set unless DATABASE_URL_OVERRIDE is configured")
         return (
             f"postgresql+psycopg://"
             f"{self.DB_USER}:"
@@ -131,6 +143,33 @@ class Settings(BaseSettings):
         if not match:
             raise ValueError("DB_PORT must start with a number")
         return int(match.group(0))
+
+    @model_validator(mode="after")
+    def validate_security_settings(self) -> "Settings":
+        env = self.ENVIRONMENT.lower()
+        if env == "production":
+            if not self.AUTH_ENABLED:
+                raise ValueError("AUTH_ENABLED cannot be false in production")
+            if self.AUTH_DEV_ADMIN_TOKEN:
+                raise ValueError("AUTH_DEV_ADMIN_TOKEN cannot be set in production")
+            if not self.AUTH_SECRET_KEY and not self.AUTH_STATIC_TOKEN_HASHES_JSON.strip("{} \t\r\n"):
+                raise ValueError(
+                    "Production auth requires AUTH_SECRET_KEY or AUTH_STATIC_TOKEN_HASHES_JSON"
+                )
+            if not self.DB_PASSWORD:
+                raise ValueError("DB_PASSWORD must be set in production")
+            if not self.METASPLOIT_RPC_USERNAME or not self.METASPLOIT_RPC_PASSWORD:
+                raise ValueError("Metasploit RPC credentials must be set in production")
+
+        for field_name in ("AUTH_USERS_JSON", "AUTH_STATIC_TOKEN_HASHES_JSON"):
+            try:
+                value = json.loads(getattr(self, field_name))
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"{field_name} must be valid JSON") from exc
+            if not isinstance(value, dict):
+                raise ValueError(f"{field_name} must be a JSON object")
+
+        return self
 
 
 settings = Settings()
