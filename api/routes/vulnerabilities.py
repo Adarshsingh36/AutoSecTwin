@@ -3,8 +3,9 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from api.dependencies import get_db
+from api.dependencies import get_db, pagination
 from api.schemas.autosectwin import VulnerabilityCreate, VulnerabilityResponse
+from core.security import Principal, require_role
 from database.models.vulnerability import Vulnerability
 from integrations.epss.client import EPSSClient
 from services.exploitability.predictor import ExploitabilityPredictionEngine
@@ -24,7 +25,8 @@ epss_client = EPSSClient()
 )
 async def create_vulnerability(
     payload: VulnerabilityCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    _: Principal = Depends(require_role("analyst", "operator", "admin")),
 ) -> Vulnerability:
     """Create a vulnerability and compute initial P(e) and TI(v)."""
 
@@ -103,13 +105,16 @@ async def create_vulnerability(
 
 @router.get("/", response_model=list[VulnerabilityResponse])
 def list_vulnerabilities(
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    page: tuple[int, int] = Depends(pagination),
 ) -> list[Vulnerability]:
     """List vulnerabilities."""
 
     return (
         db.query(Vulnerability)
         .order_by(Vulnerability.id.desc())
+        .limit(page[0])
+        .offset(page[1])
         .all()
     )
 
