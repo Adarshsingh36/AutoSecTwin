@@ -30,6 +30,16 @@ def vulnerable_function(user_input):
 
 def unrelated_function():
     return 42
+
+
+class First:
+    def duplicate(self):
+        return "first"
+
+
+class Second:
+    def duplicate(self):
+        return "second"
 '''
 
 
@@ -70,6 +80,20 @@ def test_rejects_missing_file(code_root):
 def test_rejects_missing_function(code_root):
     with pytest.raises(CodeRemediationError, match="No function or class"):
         propose_code_change("target_module.py", "nope_not_here", _vulnerability())
+
+
+def test_rejects_ambiguous_bare_symbol(code_root):
+    with pytest.raises(CodeRemediationError, match="ambiguous"):
+        propose_code_change("target_module.py", "duplicate", _vulnerability())
+
+
+def test_propose_accepts_qualified_symbol(code_root):
+    proposal = propose_code_change("target_module.py", "Second.duplicate", _vulnerability())
+
+    assert 'return "second"' in proposal.current_code
+    assert proposal.symbol_name == "Second.duplicate"
+    assert proposal.start_line > 0
+    assert proposal.end_line >= proposal.start_line
 
 
 # ---------------------------------------------------------
@@ -148,6 +172,15 @@ def test_apply_refuses_on_stale_diff(code_root):
     (code_root / "target_module.py").write_text("completely different content\n")
 
     with pytest.raises(CodeRemediationError, match="no longer contains"):
+        CodeChangeExecutor().apply(proposal, approved_content_hash=proposal.content_hash)
+
+
+def test_apply_refuses_when_approved_source_range_changed(code_root):
+    proposal = _real_proposal(code_root)
+    text = (code_root / "target_module.py").read_text()
+    (code_root / "target_module.py").write_text("# inserted line\n" + text)
+
+    with pytest.raises(CodeRemediationError, match="original source range"):
         CodeChangeExecutor().apply(proposal, approved_content_hash=proposal.content_hash)
 
 
