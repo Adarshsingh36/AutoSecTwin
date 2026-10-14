@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from api.dependencies import get_db
+from api.dependencies import get_db, pagination
 from api.schemas.autosectwin import DriftResponse, TrustCompareRequest, TrustCompareResponse, TrustStatisticsResponse
 from database.models.trust import ModelDrift
 from services.trust import PredictionComparison, TrustService
@@ -33,7 +33,10 @@ def get_statistics(db: Session = Depends(get_db)) -> dict[str, float | int]:
 
 
 @router.get("/drift", response_model=list[DriftResponse])
-def get_drift(db: Session = Depends(get_db)) -> list[ModelDrift]:
+def get_drift(
+    db: Session = Depends(get_db),
+    page: tuple[int, int] = Depends(pagination),
+) -> list[ModelDrift]:
     """Return model drift history."""
 
-    return db.query(ModelDrift).order_by(ModelDrift.id.desc()).all()
+    return db.query(ModelDrift).order_by(ModelDrift.id.desc()).limit(page[0]).offset(page[1]).all()
