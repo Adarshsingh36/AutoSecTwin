@@ -66,6 +66,9 @@ class CodeChangeProposal:
     explanation: str
     requires_manual_authoring: bool
     content_hash: str
+    start_line: int = 0
+    end_line: int = 0
+    symbol_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -121,14 +124,36 @@ def _extract_function_source(source: str, function_name: str) -> tuple[str, int,
     except SyntaxError as exc:
         raise CodeRemediationError(f"Could not parse source as Python: {exc}") from exc
 
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == function_name:
-            segment = ast.get_source_segment(source, node)
-            if segment is None:
-                raise CodeRemediationError(
-                    f"Found {function_name!r} but could not extract its source segment."
-                )
-            return segment, node.lineno, node.end_lineno or node.lineno
+    matches: list[ast.AST] = []
+
+    def visit(node: ast.AST, path: tuple[str, ...]) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                child_path = (*path, child.name)
+                if "." in function_name:
+                    if ".".join(child_path) == function_name:
+                        matches.append(child)
+                elif child.name == function_name:
+                    matches.append(child)
+                visit(child, child_path)
+            else:
+                visit(child, path)
+
+    visit(tree, ())
+
+    if len(matches) > 1:
+        raise CodeRemediationError(
+            f"{function_name!r} is ambiguous; use a qualified symbol like ClassName.method."
+        )
+
+    if len(matches) == 1:
+        node = matches[0]
+        segment = ast.get_source_segment(source, node)
+        if segment is None:
+            raise CodeRemediationError(
+                f"Found {function_name!r} but could not extract its source segment."
+            )
+        return segment, node.lineno, node.end_lineno or node.lineno
 
     raise CodeRemediationError(f"No function or class named {function_name!r} found.")
 
@@ -199,6 +224,9 @@ def propose_code_change(
         explanation=explanation,
         requires_manual_authoring=requires_manual_authoring,
         content_hash=content_hash,
+        start_line=start_line,
+        end_line=end_line,
+        symbol_name=function_name,
     )
 
 
@@ -228,16 +256,30 @@ class CodeChangeExecutor:
         safe_path = _resolve_safe_path(proposal.file_path)
         original_full_source = safe_path.read_text()
 
-        if proposal.current_code not in original_full_source:
+        if proposal.start_line and proposal.end_line:
+            source_lines = original_full_source.splitlines(keepends=True)
+            current_at_range = "".join(source_lines[proposal.start_line - 1 : proposal.end_line])
+            if current_at_range.rstrip("\r\n") != proposal.current_code.rstrip("\r\n"):
+                raise CodeRemediationError(
+                    f"{proposal.file_path} no longer contains the exact approved symbol "
+                    "at the original source range; refusing to apply a stale diff."
+                )
+            new_full_source = (
+                "".join(source_lines[: proposal.start_line - 1])
+                + proposal.proposed_code
+                + ("\n" if current_at_range.endswith("\n") and not proposal.proposed_code.endswith("\n") else "")
+                + "".join(source_lines[proposal.end_line :])
+            )
+        elif proposal.current_code not in original_full_source:
             raise CodeRemediationError(
                 f"{proposal.file_path} no longer contains the exact code this proposal was "
                 "generated against -- it may have changed since the proposal was made. Refusing "
                 "to apply a stale diff."
             )
-
-        new_full_source = original_full_source.replace(
-            proposal.current_code, proposal.proposed_code, 1
-        )
+        else:
+            new_full_source = original_full_source.replace(
+                proposal.current_code, proposal.proposed_code, 1
+            )
 
         safe_path.write_text(new_full_source)
         logger.info("Applied code change to %s (%s)", proposal.file_path, proposal.function_name)
