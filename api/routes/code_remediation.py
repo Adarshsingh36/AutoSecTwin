@@ -12,6 +12,7 @@ from api.schemas.autosectwin import (
     CodeChangeProposalResponse,
     CodeChangeProposeRequest,
 )
+from core.security import Principal, require_role
 from database.models.approval import Approval
 from database.models.vulnerability import Vulnerability
 from services.remediation.code_remediation import (
@@ -26,7 +27,11 @@ logger = logging.getLogger(__name__)
 
 
 @router.post("/propose", response_model=CodeChangeProposalResponse)
-def propose_change(payload: CodeChangeProposeRequest, db: Session = Depends(get_db)) -> CodeChangeProposalResponse:
+def propose_change(
+    payload: CodeChangeProposeRequest,
+    db: Session = Depends(get_db),
+    _: Principal = Depends(require_role("analyst", "operator", "admin")),
+) -> CodeChangeProposalResponse:
     """Propose a code-level fix for one function/class.
 
     Never writes anything. Returns the current code, proposed code, and
@@ -69,7 +74,10 @@ def propose_change(payload: CodeChangeProposeRequest, db: Session = Depends(get_
 
 @router.post("/{approval_id}/apply", response_model=CodeChangeApplyResponse)
 def apply_change(
-    approval_id: int, payload: CodeChangeApplyRequest, db: Session = Depends(get_db)
+    approval_id: int,
+    payload: CodeChangeApplyRequest,
+    db: Session = Depends(get_db),
+    _: Principal = Depends(require_role("operator", "admin")),
 ) -> CodeChangeApplyResponse:
     """Apply a previously-proposed code change.
 
