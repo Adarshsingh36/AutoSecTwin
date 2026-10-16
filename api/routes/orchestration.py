@@ -60,7 +60,10 @@ def run_orchestration(
     if settings.TASK_QUEUE_BACKEND == "celery":
         try:
             async_result = run_closed_loop_task.delay(
-                job.id, payload.vulnerability_id, payload.ttl_seconds
+                job.id,
+                payload.vulnerability_id,
+                payload.ttl_seconds,
+                payload.fixed_version,
             )
             job.celery_task_id = async_result.id
             job.dispatch_backend = "celery"
@@ -82,6 +85,7 @@ def run_orchestration(
         job_id=job.id,
         vulnerability_id=payload.vulnerability_id,
         ttl_seconds=payload.ttl_seconds,
+        fixed_version=payload.fixed_version,
         dispatch_backend=dispatch_backend,
         db=None,
     )
