@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
-
+from core.config import settings
 from database.base import Base
 from database.models.report import Report
 from services.reporting.report_generator import ReportGenerator
@@ -124,7 +124,9 @@ def client_with_report(monkeypatch):
     db.refresh(report)
     report_id = report.id
     db.close()
-
+    monkeypatch.setattr(settings, "AUTH_ENABLED", True)
+    monkeypatch.setattr(settings, "AUTH_DEV_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setattr(settings, "AUTH_STATIC_TOKEN_HASHES_JSON", "{}")
     yield TestClient(app), report_id
 
     app.dependency_overrides.clear()
@@ -133,7 +135,10 @@ def client_with_report(monkeypatch):
 def test_report_html_endpoint_renders_page(client_with_report):
     client, report_id = client_with_report
 
-    response = client.get(f"/reports/{report_id}/html")
+    response = client.get(
+        f"/reports/{report_id}/html",
+        headers={"Authorization": "Bearer admin-token"},
+    )
 
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
@@ -144,7 +149,10 @@ def test_report_html_endpoint_renders_page(client_with_report):
 def test_report_html_endpoint_404_for_missing_report(client_with_report):
     client, _ = client_with_report
 
-    response = client.get("/reports/999999/html")
+    response = client.get(
+        "/reports/999999/html",
+        headers={"Authorization": "Bearer admin-token"},
+    )
 
     assert response.status_code == 404
 
@@ -154,7 +162,10 @@ def test_report_pdf_endpoint_downloads_real_pdf(client_with_report):
 
     client, report_id = client_with_report
 
-    response = client.get(f"/reports/{report_id}/pdf")
+    response = client.get(
+        f"/reports/{report_id}/pdf",
+        headers={"Authorization": "Bearer admin-token"},
+    )
 
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/pdf"
@@ -169,6 +180,9 @@ def test_report_pdf_endpoint_downloads_real_pdf(client_with_report):
 def test_report_pdf_endpoint_404_for_missing_report(client_with_report):
     client, _ = client_with_report
 
-    response = client.get("/reports/999999/pdf")
+    response = client.get(
+        "/reports/999999/pdf",
+        headers={"Authorization": "Bearer admin-token"},
+    )
 
     assert response.status_code == 404
