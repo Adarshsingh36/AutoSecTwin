@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -6,13 +8,11 @@ from sqlalchemy.pool import StaticPool
 from database.base import Base
 from database.models.asset import Asset
 from database.models.exploit import Exploit
-from database.models.orchestration_job import OrchestrationJob
-from database.models.report import Report
-from database.models.validation import Validation
 from database.models.vulnerability import Vulnerability
-
-from core.config import settings
-from services.orchestration.closed_loop_orchestrator import ClosedLoopOrchestrator, OrchestrationError
+from services.orchestration.closed_loop_orchestrator import (
+    ClosedLoopOrchestrationError,
+    ClosedLoopOrchestrator,
+)
 
 
 @pytest.fixture()
@@ -30,32 +30,7 @@ def db_session():
         yield session
     finally:
         session.close()
-
-
-@pytest.fixture(autouse=True)
-def mock_mode_enabled(monkeypatch):
-    """Force MOCK_MODE for the duration of each test so no real Metasploit
-    RPC daemon or Digital Twin Generator is required."""
-
-    monkeypatch.setattr(settings, "MOCK_MODE", True)
-    monkeypatch.setattr(settings, "TWIN_HEALTH_TIMEOUT_SECONDS", 5.0)
-    monkeypatch.setattr(settings, "TWIN_HEALTH_POLL_INTERVAL_SECONDS", 0.01)
-    yield
-
-
-class _StubPredictor:
-    """Deterministic exploitability predictor for orchestrator tests."""
-
-    def __init__(self, probability: float = 0.93):
-        self.probability = probability
-
-    def predict(self, vulnerability):
-        return self.probability
-
-
-class _FailingPredictor:
-    def predict(self, vulnerability):
-        raise RuntimeError("model artifact corrupted")
+        engine.dispose()
 
 
 def _seed_vulnerability(db, with_exploit: bool = True) -> Vulnerability:
@@ -87,136 +62,174 @@ def _seed_vulnerability(db, with_exploit: bool = True) -> Vulnerability:
     db.refresh(vulnerability)
 
     if with_exploit:
-        exploit = Exploit(
-            vulnerability_id=vulnerability.id,
-            source="metasploit",
-            module_name="windows/smb/ms17_010_eternalblue",
-            title="MS17-010 EternalBlue",
-            reliability_score=0.9,
-            requires_auth=False,
-            metadata_json={"module_type": "exploit"},
+        db.add(
+            Exploit(
+                vulnerability_id=vulnerability.id,
+                source="metasploit",
+                module_name="windows/smb/ms17_010_eternalblue",
+                title="MS17-010 EternalBlue",
+                reliability_score=0.9,
+                requires_auth=False,
+                metadata_json={"module_type": "exploit"},
+            )
         )
-        db.add(exploit)
         db.commit()
 
     return vulnerability
 
 
-def _make_job(db, vulnerability_id: int) -> OrchestrationJob:
-    job = OrchestrationJob(job_id="test-job-1", vulnerability_id=vulnerability_id)
-    db.add(job)
-    db.commit()
-    db.refresh(job)
-    return job
+class _ProvisioningStub:
+    async def provision(self, vulnerability_id, ttl_seconds=None):
+        return SimpleNamespace(
+            id=23,
+            name="test-twin",
+            provider="test",
+            status="running",
+            endpoint=None,
+        )
+
+    async def wait_until_ready(self, twin):
+        return twin
+
+
+class _ValidationStub:
+    def __init__(self, status="validated", ready=True, reasons=None):
+        self.status = status
+        self.ready = ready
+        self.reasons = reasons or []
+
+    async def validate(self, db, exploit, twin):
+        return SimpleNamespace(
+            validation=SimpleNamespace(
+                id=41,
+                vulnerability_id=exploit.vulnerability_id,
+                phase="initial",
+                status=self.status,
+                validation_score=0.9,
+                analysis="test validation result",
+                evidence={
+                    "execution_outcome": (
+                        "session_established"
+                        if self.status == "validated"
+                        else "confirmed_no_session"
+                    ),
+                    "session_id": "test-session" if self.status == "validated" else None,
+                },
+            ),
+            readiness=SimpleNamespace(ready=self.ready, reasons=self.reasons),
+        )
+
+
+class _RecommendationStub:
+    def __init__(self):
+        self.calls = []
+
+    def generate(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(
+            id=57,
+            title="Upgrade vulnerable product",
+            content="Upgrade to a vendor-fixed release.",
+            provider="test",
+        )
+
+
+def _make_orchestrator(db, validation=None, recommendation=None):
+    recommendation = recommendation or _RecommendationStub()
+    orchestrator = ClosedLoopOrchestrator(
+        db,
+        provisioning_service=_ProvisioningStub(),
+        validation_orchestrator=validation or _ValidationStub(),
+        recommendation_engine=recommendation,
+    )
+    return orchestrator, recommendation
 
 
 @pytest.mark.asyncio
-async def test_closed_loop_end_to_end_resolves_after_remediation(db_session):
-    """The full acceptance-test scenario from the spec: a vulnerability is
-    predicted exploitable, validated against a twin, remediated, and the
-    revalidation shows it is no longer exploitable.
-    """
+async def test_validated_ready_run_generates_recommendation(db_session):
+    vulnerability = _seed_vulnerability(db_session)
+    orchestrator, recommendation = _make_orchestrator(db_session)
+
+    summary = await orchestrator.run(vulnerability.id, ttl_seconds=60)
+
+    assert summary["validation_status"] == "validated"
+    assert summary["validation_score"] == 0.9
+    assert summary["next_step"] == "awaiting_human_review"
+    assert summary["recommendation_id"] == 57
+    assert summary["report_id"] is not None
+    assert summary["approval_id"] is not None
+    assert summary["review_url"] == f"/approvals/{summary['approval_id']}/review"
+    assert recommendation.calls == [
+        {
+            "vulnerability_id": vulnerability.id,
+            "recommendation_type": "patch",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_validated_run_with_fixed_version_requests_approval(db_session, monkeypatch):
+    from services.orchestration import closed_loop_orchestrator
 
     vulnerability = _seed_vulnerability(db_session)
-    job = _make_job(db_session, vulnerability.id)
-
-    orchestrator = ClosedLoopOrchestrator(predictor=_StubPredictor(0.93))
-    result = await orchestrator.run(db_session, job)
-
-    db_session.refresh(job)
-
-    assert job.status == "completed"
-    assert job.stage == "completed"
-    assert job.progress == 100
-
-    assert result.exploitability_probability == pytest.approx(0.93)
-    assert result.summary["initial_validation_status"] == "validated"
-    assert result.summary["remediation_status"] == "verified"
-    assert result.summary["revalidation_result"] == "resolved"
-    assert result.final_status == "remediated"
-
-    # Both the initial and post-remediation validation rows must be persisted
-    # (evidence-driven, not overwritten in place).
-    validations = db_session.query(Validation).filter(Validation.vulnerability_id == vulnerability.id).all()
-    phases = {v.phase for v in validations}
-    assert phases == {"initial", "revalidation"}
-
-    initial = next(v for v in validations if v.phase == "initial")
-    revalidated = next(v for v in validations if v.phase == "revalidation")
-    assert initial.status == "validated"
-    assert revalidated.status != "validated"
-    assert revalidated.validation_score < initial.validation_score
-
-    # A closed-loop report must have been generated and persisted from the
-    # actual database rows.
-    report = db_session.query(Report).filter(Report.vulnerability_id == vulnerability.id).first()
-    assert report is not None
-    assert '"final_status": "remediated"' in report.content
-    assert vulnerability.cve_id in report.content
-
-
-@pytest.mark.asyncio
-async def test_closed_loop_stops_cleanly_when_model_fails(db_session):
-    """Exploitability model failures must fail the job cleanly, not crash
-    the process or fabricate a heuristic score."""
-
-    vulnerability = _seed_vulnerability(db_session)
-    job = _make_job(db_session, vulnerability.id)
-
-    orchestrator = ClosedLoopOrchestrator(predictor=_FailingPredictor())
-
-    with pytest.raises(OrchestrationError):
-        await orchestrator.run(db_session, job)
-
-    db_session.refresh(job)
-    assert job.status == "failed"
-    assert job.stage == "assessment"
-    assert "model artifact corrupted" in job.error
-
-
-@pytest.mark.asyncio
-async def test_closed_loop_stops_when_no_exploit_candidate_exists(db_session):
-    """Without a mapped, Metasploit-ready exploit the loop must not proceed
-    to twin provisioning or execution."""
-
-    vulnerability = _seed_vulnerability(db_session, with_exploit=False)
-    job = _make_job(db_session, vulnerability.id)
-
-    orchestrator = ClosedLoopOrchestrator(predictor=_StubPredictor(0.8))
-
-    with pytest.raises(OrchestrationError) as exc_info:
-        await orchestrator.run(db_session, job)
-
-    assert exc_info.value.stage == "exploit_selection"
-
-    db_session.refresh(job)
-    assert job.status == "failed"
-    assert job.stage == "exploit_selection"
-
-
-@pytest.mark.asyncio
-async def test_closed_loop_skips_remediation_when_not_validated(db_session, monkeypatch):
-    """If the controlled validation is inconclusive/failed, remediation and
-    revalidation must be skipped rather than acting on an unconfirmed
-    finding."""
-
-    from services.validation.validation_engine import ValidationEngine
-
-    vulnerability = _seed_vulnerability(db_session)
-    job = _make_job(db_session, vulnerability.id)
-
-    # Force the validation engine to always report "failed" regardless of
-    # the simulated Metasploit evidence, to exercise the skip branch.
-    monkeypatch.setattr(
-        ValidationEngine,
-        "analyze",
-        lambda self, evidence: ("failed", 0.1, "forced failure for test"),
+    requested = {}
+    approval_stub = SimpleNamespace(
+        id=68,
+        status="pending",
+        requested_action="apply_patch",
+        context={"review_package": {}},
     )
 
-    orchestrator = ClosedLoopOrchestrator(predictor=_StubPredictor(0.8))
-    result = await orchestrator.run(db_session, job)
+    def fake_request_approval(db, **kwargs):
+        requested.update(kwargs)
+        return approval_stub
 
-    assert result.summary["initial_validation_status"] == "failed"
-    assert result.remediation_id is None
-    assert result.revalidation_id is None
-    assert result.final_status == "not_exploitable"
+    monkeypatch.setattr(closed_loop_orchestrator, "request_approval", fake_request_approval)
+    orchestrator, _ = _make_orchestrator(db_session)
+
+    summary = await orchestrator.run(vulnerability.id, fixed_version=" 5.17.6 ")
+
+    assert summary["next_step"] == "awaiting_human_approval"
+    assert summary["approval_id"] == 68
+    assert requested["fixed_version"] == "5.17.6"
+    assert approval_stub.context["report_id"] == summary["report_id"]
+    assert approval_stub.context["review_package"]["report_id"] == summary["report_id"]
+
+
+@pytest.mark.asyncio
+async def test_run_stops_when_no_exploit_is_mapped(db_session):
+    vulnerability = _seed_vulnerability(db_session, with_exploit=False)
+    orchestrator, _ = _make_orchestrator(db_session)
+
+    with pytest.raises(ClosedLoopOrchestrationError, match="No Exploit is mapped"):
+        await orchestrator.run(vulnerability.id)
+
+
+@pytest.mark.asyncio
+async def test_run_stops_when_readiness_gate_fails(db_session):
+    vulnerability = _seed_vulnerability(db_session)
+    validation = _ValidationStub(
+        status="inconclusive",
+        ready=False,
+        reasons=["required target option is missing"],
+    )
+    orchestrator, recommendation = _make_orchestrator(db_session, validation)
+
+    summary = await orchestrator.run(vulnerability.id)
+
+    assert summary["next_step"] == "not_ready_for_execution"
+    assert summary["readiness_reasons"] == ["required target option is missing"]
+    assert recommendation.calls == []
+
+
+@pytest.mark.asyncio
+async def test_unvalidated_run_does_not_generate_recommendation(db_session):
+    vulnerability = _seed_vulnerability(db_session)
+    validation = _ValidationStub(status="failed")
+    orchestrator, recommendation = _make_orchestrator(db_session, validation)
+
+    summary = await orchestrator.run(vulnerability.id)
+
+    assert summary["next_step"] == "not_validated_no_recommendation_generated"
+    assert "recommendation_id" not in summary
+    assert recommendation.calls == []
