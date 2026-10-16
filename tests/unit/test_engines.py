@@ -189,3 +189,110 @@ def test_revalidation_engine_inverts_residual_validation():
     assert status == "verified"
     assert score == 0.9
     assert evidence["residual_validation_score"] == 0.1
+
+
+@pytest.mark.parametrize(
+    (
+        "initial_evidence",
+        "revalidation_evidence",
+        "execution_outcome",
+        "revalidation_status",
+        "expected_result",
+    ),
+    [
+        (
+            {"simulated": True},
+            {"simulated": False},
+            "confirmed_no_session",
+            "failed",
+            "inconclusive",
+        ),
+        (
+            {"simulated": False},
+            {"simulated": True},
+            "confirmed_no_session",
+            "failed",
+            "inconclusive",
+        ),
+        (
+            {"raw_result": {"simulated": True}},
+            {"simulated": False},
+            "confirmed_no_session",
+            "failed",
+            "inconclusive",
+        ),
+        (
+            {},
+            {"simulated": False},
+            "confirmed_no_session",
+            "failed",
+            "resolved",
+        ),
+        (
+            {"simulated": False},
+            {"simulated": False},
+            "confirmed_no_session",
+            "validated",
+            "inconclusive",
+        ),
+        (
+            {"simulated": False},
+            {"simulated": False},
+            "session_established",
+            "validated",
+            "still_vulnerable",
+        ),
+        (
+            {"simulated": False},
+            {"simulated": False},
+            "session_established",
+            "failed",
+            "inconclusive",
+        ),
+        (
+            {"simulated": False},
+            {"simulated": False},
+            "unknown_outcome",
+            "failed",
+            "inconclusive",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_revalidation_classifies_simulation_and_execution_outcomes(
+    initial_evidence,
+    revalidation_evidence,
+    execution_outcome,
+    revalidation_status,
+    expected_result,
+):
+    validation = SimpleNamespace(
+        phase=None,
+        evidence={"execution_outcome": execution_outcome, **revalidation_evidence},
+        validation_score=0.0,
+        status=revalidation_status,
+    )
+
+    class StubOrchestrator:
+        async def validate(self, db, exploit, twin):
+            return SimpleNamespace(validation=validation)
+
+    class StubSession:
+        def commit(self):
+            pass
+
+        def refresh(self, instance):
+            pass
+
+    summary = await RevalidationEngine(orchestrator=StubOrchestrator()).run(
+        StubSession(),
+        exploit=SimpleNamespace(id=1),
+        twin=SimpleNamespace(id=1),
+        initial_validation=SimpleNamespace(
+            evidence=initial_evidence,
+            validation_score=1.0,
+        ),
+        remediation=SimpleNamespace(id=1),
+    )
+
+    assert summary.result == expected_result
