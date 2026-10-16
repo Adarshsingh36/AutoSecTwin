@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import Any
 import asyncio
 import httpx
@@ -82,28 +83,7 @@ class MetasploitRPCClient:
 
         return token
 
-    async def run_module(
-        self,
-        module_type: str,
-        module_name: str,
-        options: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Execute a Metasploit module."""
-
-        if self.mock_mode:
-            return self._mock_run_module(module_type, module_name, options)
-
-        token = self._token or await self.login()
-
-        return await self._call_raw(
-            [
-                "module.execute",
-                token,
-                module_type,
-                module_name,
-                options,
-            ]
-        )
+        
 
     async def get_module_info(
         self,
@@ -125,18 +105,27 @@ class MetasploitRPCClient:
                 module_name,
             ]
         )
+    
     async def check_module(
         self,
         module_type: str,
         module_name: str,
         options: dict[str, Any],
     ) -> dict[str, Any]:
-        """Run a Metasploit module check without executing the exploit."""
+        """Run a supported Metasploit module check."""
 
         if self.mock_mode:
             return {"code": "vulnerable", "simulated": True}
 
         token = self._token or await self.login()
+
+        info = await self.get_module_info(module_type, module_name)
+
+        if info.get("check") is not True:
+            raise RuntimeError(
+                f"Metasploit module does not advertise check support: "
+                f"{module_type}/{module_name}"
+            )
 
         return await self._call_raw(
             [
@@ -147,6 +136,7 @@ class MetasploitRPCClient:
                 options,
             ]
         )
+
 
     async def _call_raw(
         self,
@@ -161,7 +151,8 @@ class MetasploitRPCClient:
             )
 
             async with httpx.AsyncClient(
-                timeout=self.timeout
+                timeout=self.timeout,
+                verify=os.environ.get("SSL_CERT_FILE", True),
             ) as http_client:
 
                 response = await http_client.post(
@@ -202,7 +193,8 @@ class MetasploitRPCClient:
             )
 
             raise RuntimeError(
-                "Metasploit RPC HTTP request failed"
+                f"Metasploit RPC HTTP request failed: "
+                f"{type(exc).__name__}: {exc}"
             ) from exc
 
         except (
@@ -432,52 +424,67 @@ class MetasploitRPCClient:
         metadata["simulated"] = True
         return metadata
 
-    def _mock_run_module(
-        self,
-        module_type: str,
-        module_name: str,
-        options: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Return deterministic exploit execution evidence for MOCK_MODE.
-
-        The simulated module "succeeds" against the Digital Twin (which is
-        exactly the isolated environment MOCK_MODE stands in for), returning
-        success markers the ValidationEngine recognizes.
-        """
-
-        target = options.get("RHOSTS") or options.get("RHOST") or "unknown"
-
-        if str(options.get("_simulated_remediated", "false")).lower() == "true":
+    def _decode_bytes(self, value: Any) -> Any:
+        """Recursively decode byte strings returned by MessagePack."""
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        if isinstance(value, dict):
             return {
-                "job_id": 1,
-                "uuid": "mock-job",
-                "exit_code": 1,
-                "markers": [],
-                "stdout": (
-                    f"[*] Simulated {module_type}/{module_name} run against {target}\n"
-                    "[-] Connection refused: vulnerable service disabled by remediation (simulated)\n"
-                ),
-                "stderr": "Exploit failed: target no longer vulnerable (simulated remediation)",
-                "session_id": None,
-                "simulated": True,
+                self._decode_bytes(key): self._decode_bytes(item)
+                for key, item in value.items()
             }
+        if isinstance(value, list):
+            return [self._decode_bytes(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(self._decode_bytes(item) for item in value)
+        return value
 
+    
+def _mock_run_module(
+    self,
+    module_type: str,
+    module_name: str,
+    options: dict[str, Any],
+) -> dict[str, Any]:
+    """Return deterministic, explicitly simulated execution evidence."""
+
+    target = options.get("RHOSTS") or options.get("RHOST") or "unknown"
+
+    if str(options.get("_simulated_remediated", "false")).lower() == "true":
         return {
             "job_id": 1,
             "uuid": "mock-job",
             "exit_code": 0,
-            "markers": ["shell_opened", "proof_obtained"],
+            "markers": [],
             "stdout": (
                 f"[*] Simulated {module_type}/{module_name} run against {target}\n"
-                "[*] Meterpreter session opened (simulated)\n"
+                "[-] Simulated completed attempt: no session created "
+                "because remediation disabled the vulnerable service.\n"
             ),
             "stderr": "",
-            "session_id": 1,
+            "session_id": None,
+            "execution_outcome": "confirmed_no_session",
             "simulated": True,
         }
 
-    @staticmethod
-    def _decode_bytes(value: Any) -> Any:
+    return {
+        "job_id": 1,
+        "uuid": "mock-job",
+        "exit_code": 0,
+        "markers": ["shell_opened", "proof_obtained"],
+        "stdout": (
+            f"[*] Simulated {module_type}/{module_name} run against {target}\n"
+            "[*] Simulated session opened.\n"
+        ),
+        "stderr": "",
+        "session_id": 1,
+        "execution_outcome": "session_established",
+        "simulated": True,
+    }
+
+
+@staticmethod
+def _decode_bytes(value: Any) -> Any:
         """Recursively convert MessagePack byte strings to Python strings."""
 
         if isinstance(value, bytes):
@@ -485,8 +492,8 @@ class MetasploitRPCClient:
 
         if isinstance(value, dict):
             return {
-                MetasploitRPCClient._decode_bytes(key):
-                MetasploitRPCClient._decode_bytes(val)
+                _decode_bytes(key):
+                _decode_bytes(val)
                 for key, val in value.items()
             }
 
