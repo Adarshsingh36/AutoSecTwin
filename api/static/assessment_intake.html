@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Submit Assessment | AutoSecTwin</title>
+  <style>
+    :root { color-scheme: light; --ink:#172522; --muted:#53645e; --line:#d6dfd9; --paper:#f4f7f3; --white:#fff; --green:#17654d; --green-dark:#104633; --orange:#a9431d; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--paper); color:var(--ink); font:16px/1.5 "Segoe UI",Tahoma,sans-serif; }
+    header { padding:24px max(24px,calc((100vw - 980px)/2)); border-bottom:1px solid var(--line); background:var(--white); }
+    .brand { color:var(--green); font-size:13px; font-weight:700; text-transform:uppercase; }
+    h1 { margin:8px 0 4px; font:600 30px/1.15 Cambria,Georgia,serif; }
+    header p { margin:0; color:var(--muted); }
+    main { max-width:980px; margin:28px auto 60px; padding:0 24px; }
+    .notice { padding:14px 16px; border-left:4px solid var(--orange); background:#fff4ed; color:#59301f; }
+    label { display:block; margin:18px 0 6px; font-weight:650; }
+    input,textarea { display:block; width:100%; border:1px solid #aebdb4; border-radius:4px; background:var(--white); color:var(--ink); font:14px/1.5 Consolas,monospace; }
+    input { max-width:220px; padding:10px 12px; }
+    textarea { min-height:430px; padding:14px; resize:vertical; }
+    .actions { display:flex; align-items:center; gap:14px; margin-top:18px; }
+    button { border:0; border-radius:4px; padding:11px 18px; background:var(--green); color:#fff; font:650 15px "Segoe UI",Tahoma,sans-serif; cursor:pointer; }
+    button:hover { background:var(--green-dark); } button:disabled { cursor:wait; opacity:.65; }
+    #status { color:var(--muted); } .error { color:#9d2f1c!important; }
+    @media(max-width:600px) { header{padding:20px} main{margin-top:18px;padding:0 16px} h1{font-size:26px} textarea{min-height:360px} .actions{align-items:flex-start;flex-direction:column} }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">AutoSecTwin · Assessment intake</div>
+    <h1>Submit security findings</h1>
+    <p>Record the observations, generate a report, and open a human review.</p>
+  </header>
+  <main>
+    <div class="notice"><strong>Evidence boundary:</strong> observed exposure does not by itself prove successful exploitation, account compromise, or remediation.</div>
+    <form id="intake-form">
+      <label for="vulnerability-id">ASDE vulnerability ID</label>
+      <input id="vulnerability-id" type="number" min="1" value="24" required>
+      <label for="evidence">Assessment evidence (JSON)</label>
+      <textarea id="evidence" spellcheck="false" required></textarea>
+      <div class="actions"><button id="submit" type="submit">Create report and open review</button><span id="status" role="status" aria-live="polite"></span></div>
+    </form>
+  </main>
+  <script>
+    const starter = {
+      source:"user_submitted_http_assessment", target_url:"http://192.168.56.1:3000",
+      exploitation_demonstrated:false, credential_compromise_confirmed:false, remediation_applied:false,
+      findings:[
+        {id:"F-01",title:"Exposed FTP directory listing",severity:"Medium",endpoint:"GET /ftp/",http_status:200,status:"confirmed_directory_listing",impact:"Internal filenames were visible. Verify the contents and sensitivity of each file."},
+        {id:"F-02",title:"Unauthenticated KDBX file access",severity:"Medium - provisional",endpoint:"GET /ftp/incident-support.kdbx",http_status:200,content_type:"application/octet-stream",content_length:3246,status:"file_exposure_confirmed_contents_unverified",impact:"The file download was observed; contents, encryption, and usable credentials are unverified."},
+        {id:"F-03",title:"Permissive CORS response",severity:"Needs validation",endpoints:["/","/api/Challenges"],observed_header:"Access-Control-Allow-Origin: *",status:"wildcard_observed_exploitability_not_demonstrated",impact:"A wildcard header was observed; sensitive cross-origin data access was not demonstrated."},
+        {id:"F-04",title:"Backup files listed but access restricted",endpoints:["/ftp/package.json.bak","/ftp/coupons_2013.md.bak"],http_status:403,status:"direct_access_blocked",impact:"Names were listed, but direct access was blocked in the tests."},
+        {id:"F-05",title:"robots.txt discloses FTP path",endpoint:"GET /robots.txt",status:"informational",impact:"Informational only; robots.txt is not access control."}
+      ],
+      tests_not_establishing_vulnerability:["Juice Shop reachability returned HTTP 200; this confirms reachability only.","GraphQL introspection was not demonstrated.","/rest/user/whoami returned an empty user object; no sensitive account data was observed."],
+      recommended_remediations:["Disable directory listing for /ftp/ and remove files not intended to be public.","Review the KDBX file safely; rotate credentials if present and restrict or remove public access.","Restrict CORS to trusted origins where cross-origin access is required, then retest.","Keep backup files inaccessible and remove them from public web directories.","Do not rely on robots.txt as an access-control mechanism."],
+      assessment_note:"Exposure was observed. No successful application exploit, credential compromise, or remediation was demonstrated.",
+      recorded_asde_values:{cvss:0.0,exploitability_probability:0.005,exposure_score:1.0,note:"Recorded ASDE values; not independently recalculated."}
+    };
+    const editor=document.getElementById("evidence"); editor.value=JSON.stringify(starter,null,2);
+    const form=document.getElementById("intake-form"), button=document.getElementById("submit"), status=document.getElementById("status");
+    form.addEventListener("submit",async event=>{
+      event.preventDefault(); status.className="";
+      try {
+        const evidence=JSON.parse(editor.value); button.disabled=true; status.textContent="Saving findings and preparing the review…";
+        const response=await fetch("/validations/",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({vulnerability_id:Number(document.getElementById("vulnerability-id").value),evidence})});
+        const result=await response.json(); if(!response.ok) throw new Error(result.detail||JSON.stringify(result));
+        if(!result.review_url) throw new Error("The report was saved, but this assessment did not produce a recommendation review.");
+        window.location.assign(result.review_url);
+      } catch(error) { status.textContent=error.message; status.className="error"; button.disabled=false; }
+    });
+  </script>
+</body>
+</html>

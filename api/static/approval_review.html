@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Human Review | AutoSecTwin</title>
+  <style>
+    :root { color-scheme:light; --ink:#172522; --muted:#53645e; --line:#d6dfd9; --paper:#f4f7f3; --white:#fff; --green:#17654d; --green-dark:#104633; --red:#a3362c; --red-dark:#79251e; --soft:#e7eee8; }
+    *{box-sizing:border-box} body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.5 "Segoe UI",Tahoma,sans-serif}
+    header{padding:24px max(24px,calc((100vw - 1050px)/2));border-bottom:1px solid var(--line);background:var(--white)}
+    .brand{color:var(--green);font-size:13px;font-weight:700;text-transform:uppercase} h1{margin:8px 0 4px;font:600 30px/1.15 Cambria,Georgia,serif} header p{margin:0;color:var(--muted)}
+    main{max-width:1050px;margin:28px auto 60px;padding:0 24px}.status{display:inline-block;border-radius:3px;padding:4px 9px;background:#fff0d4;color:#714b00;font-size:13px;font-weight:700;text-transform:uppercase}
+    .summary{margin:18px 0;border-left:4px solid var(--green);padding:16px 18px;background:var(--white)} h2{margin:28px 0 10px;font:600 22px Cambria,Georgia,serif}
+    .revision-note{margin:12px 0;padding:12px 15px;border-left:4px solid #a36a16;background:#fff5df;color:#583c11}
+    .finding{padding:14px 0;border-top:1px solid var(--line)} .finding h3{margin:0;font-size:16px}.meta{margin-top:3px;color:var(--muted);font-size:13px}
+    .recommendation{margin:18px 0;padding:16px 18px;background:var(--soft)} .limitations{padding-left:22px;color:var(--muted)} .review{margin-top:30px;padding-top:20px;border-top:2px solid var(--ink)}
+    label{display:block;margin:16px 0 6px;font-weight:650} input,textarea{width:100%;border:1px solid #aebdb4;border-radius:4px;padding:10px 12px;background:var(--white);color:var(--ink);font:inherit}
+    textarea{min-height:100px;resize:vertical}.confirm{display:flex;gap:10px;align-items:flex-start;margin:18px 0;color:var(--muted)}.confirm input{width:auto;margin-top:5px}
+    .actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px} button{border:0;border-radius:4px;padding:11px 16px;color:#fff;font:650 14px "Segoe UI",Tahoma,sans-serif;cursor:pointer}button:disabled{cursor:wait;opacity:.6}
+    .approve{background:var(--green)}.approve:hover{background:var(--green-dark)}.reject{background:var(--red)}.reject:hover{background:var(--red-dark)}.respond{background:#465a54}
+    #message{margin:14px 0;color:var(--muted)}.error{color:var(--red)!important}.links{display:flex;gap:16px;margin-top:16px}a{color:var(--green)}[hidden]{display:none!important}
+    @media(max-width:600px){header{padding:20px}main{margin-top:18px;padding:0 16px}h1{font-size:26px}.actions{flex-direction:column;align-items:stretch}}
+  </style>
+</head>
+<body>
+  <header><div class="brand">AutoSecTwin · Human review</div><h1 id="title">Review security findings</h1><p id="subtitle">Loading evidence and proposed action…</p></header>
+  <main>
+    <span id="approval-status" class="status">Loading</span>
+    <section class="summary"><strong>What this means</strong><p id="summary"></p></section>
+    <p id="revision-note" class="revision-note" hidden></p>
+    <h2>Findings</h2><div id="findings"></div>
+    <h2>Suggested response</h2><div id="recommendation" class="recommendation"></div><ul id="limitations" class="limitations"></ul>
+    <div class="links" id="report-links"></div>
+    <section class="review">
+      <h2>Your decision</h2><p id="action-explanation"></p>
+      <label for="reviewer">Reviewer name</label><input id="reviewer" autocomplete="name" placeholder="Your name" required>
+      <label for="response">Response or requested changes</label><textarea id="response" placeholder="Yes, accept this recommendation. Or describe what should change."></textarea>
+      <label id="confirm-row" class="confirm" hidden><input id="confirm-deploy" type="checkbox"><span>I understand approval will modify this Digital Twin and start remediation/revalidation.</span></label>
+      <div class="actions" id="decision-actions"><button class="approve" id="approve-button" type="button">Accept recommendation</button><button class="reject" id="reject-button" type="button">Reject</button><button class="respond" id="respond-button" type="button">Send response / request changes</button></div>
+      <p id="message" role="status" aria-live="polite"></p>
+    </section>
+  </main>
+  <script>
+    const segments=window.location.pathname.split("/").filter(Boolean), approvalId=segments[segments.length-2];
+    const byId=id=>document.getElementById(id);
+    let approval;
+    const addText=(parent,tag,text,className)=>{const node=document.createElement(tag);node.textContent=text||"Not provided";if(className)node.className=className;parent.appendChild(node);return node;};
+    async function loadApproval(){
+      const response=await fetch(`/approvals/${approvalId}`),data=await response.json();if(!response.ok)throw new Error(data.detail||"Could not load approval.");approval=data;
+      const context=data.context||{},review=context.review_package||{},plain=review.plain_language||{},recommendation=review.recommendation||{},recommendOnly=data.requested_action==="recommend_only";
+      byId("approval-status").textContent=data.status;byId("title").textContent=review.vulnerability?.title||`Review finding ${data.vulnerability_id}`;
+      byId("subtitle").textContent=`${review.vulnerability?.cve_id||`Vulnerability ${data.vulnerability_id}`} · ${review.validation_status||"Evidence review"} · Request ${data.id}`;
+      byId("summary").textContent=plain.summary||"No plain-language summary was supplied.";
+      if(context.revision_history?.length){byId("revision-note").hidden=false;byId("revision-note").textContent=context.reproposal_required?`Reviewer requested a change: ${context.human_response}. This Twin/version proposal cannot be approved; a new proposal is required.`:`Updated recommendation awaiting approval: ${context.human_response}`;}
+      const root=byId("findings");
+      for(const finding of review.findings||[]){const section=document.createElement("section");section.className="finding";addText(section,"h3",`${finding.id?finding.id+" · ":""}${finding.title||"Finding"}`);addText(section,"div",`${finding.status||"Status not supplied"}${finding.endpoint?" · "+finding.endpoint:""}`,"meta");addText(section,"p",finding.impact||"Impact requires further verification.");root.appendChild(section);}
+      if(!root.childElementCount)addText(root,"p","No individual findings were attached.");
+      addText(byId("recommendation"),"strong",recommendation.title||"Recommendation");addText(byId("recommendation"),"p",recommendation.content||"No recommendation was supplied.");
+      for(const action of plain.recommended_next_steps||[])addText(byId("recommendation"),"p",action);
+      for(const limitation of review.limitations||[])addText(byId("limitations"),"li",limitation);
+      const reportId=review.report_id||context.report_id;if(reportId){const link=document.createElement("a");link.href=`/reports/${reportId}/html`;link.textContent="Open full report";byId("report-links").appendChild(link);}
+      if(recommendOnly){byId("action-explanation").textContent="Accepting records agreement with this recommendation only. It does not apply a patch. Deployment requires a separate approval tied to a specific Digital Twin and fixed version.";byId("approve-button").textContent="Accept recommendation only";}
+      else{byId("action-explanation").textContent=`Approving will authorize the proposed action on Twin ${data.target_twin_id} using fixed version ${data.fixed_version||"not specified"}.`;byId("confirm-row").hidden=false;byId("approve-button").textContent="Approve and start remediation";}
+      if(data.status!=="pending"){byId("decision-actions").hidden=true;showMessage(`This request is already ${data.status}.`);}
+      if(context.reproposal_required){byId("approve-button").disabled=true;byId("action-explanation").textContent="A reviewer requested changes. This approval is locked; create a new approval with the revised Twin/version proposal.";}
+    }
+    function showMessage(text,error=false){byId("message").textContent=text;byId("message").className=error?"error":"";}
+    async function send(body){const buttons=[...document.querySelectorAll("button")];buttons.forEach(button=>button.disabled=true);try{const response=await fetch(`/approvals/${approvalId}/decision`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}),data=await response.json();if(!response.ok)throw new Error(data.detail||"Could not save your response.");approval=data;byId("approval-status").textContent=data.status;if(data.status==="pending"){if(data.response_interpretation==="revision_requested"){showMessage("Revision recorded. The updated recommendation and report are being loaded.");window.location.reload();}else showMessage("Response unclear. The request remains pending; no action was taken.");}else{showMessage(`Decision recorded: ${data.status}. Decision report: ${data.context?.decision_report_id||"pending"}.`);byId("decision-actions").hidden=true;}}catch(error){showMessage(error.message,true);}finally{buttons.forEach(button=>button.disabled=false);}}
+    function submitDecision(status){const reviewer=byId("reviewer").value.trim(),response=byId("response").value.trim();if(!reviewer)return showMessage("Enter the reviewer name.",true);if(status==="approved"&&approval.requested_action!=="recommend_only"&&!byId("confirm-deploy").checked)return showMessage("Confirm that you intend to modify this Twin before approving.",true);send({status,decided_by:reviewer,human_response:response||(status==="approved"?"yes":"no")});}
+    byId("approve-button").addEventListener("click",()=>submitDecision("approved"));byId("reject-button").addEventListener("click",()=>submitDecision("rejected"));
+    byId("respond-button").addEventListener("click",()=>{const reviewer=byId("reviewer").value.trim(),response=byId("response").value.trim();if(!reviewer||!response)return showMessage("Enter your name and response.",true);send({decided_by:reviewer,human_response:response});});
+    loadApproval().catch(error=>showMessage(error.message,true));
+  </script>
+</body>
+</html>
