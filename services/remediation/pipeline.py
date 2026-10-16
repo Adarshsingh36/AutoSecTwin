@@ -136,46 +136,90 @@ async def run_revalidation_only(db: Session, remediation_id: int) -> Remediation
     db.commit()
     db.refresh(remediation)
 
+    
     engine = RevalidationEngine()
-    summary = await engine.run(db, exploit, twin, initial_validation, remediation)
 
-    comparison = build_before_after_comparison(
-        initial_validation, summary.revalidation, summary.result
-    )
-
-    remediation.verification_score = summary.revalidation_score
-    remediation.evidence = {
-        **(remediation.evidence or {}),
-        "before_after": comparison,
-        "revalidation_comparison": summary.comparison,
-        "revalidation_outcome": summary.result,
-    }
-
-    if summary.result == "resolved":
-        remediation.status = remediation_status.VERIFIED
-        remediation.verified_at = datetime.now(timezone.utc)
-    elif summary.result == "still_vulnerable":
-        remediation.status = remediation_status.FAILED
-    else:
-        remediation.status = remediation_status.MANUAL_ACTION_REQUIRED
-        remediation.evidence["manual_action_reason"] = (
-            "Revalidation was inconclusive (timeout, RPC error, or an ambiguous "
-            "result) -- human review required before this can be called resolved "
-            "or failed."
+    try:
+        summary = await engine.run(
+            db, exploit, twin, initial_validation, remediation
         )
 
-    db.add(remediation)
-    db.commit()
-    db.refresh(remediation)
+        comparison = build_before_after_comparison(
+            initial_validation, summary.revalidation, summary.result
+        )
 
-    logger.info(
-        "Remediation %s revalidation complete: outcome=%s status=%s",
-        remediation_id,
-        summary.result,
-        remediation.status,
-    )
+        remediation.verification_score = summary.revalidation_score
+        remediation.evidence = {
+            **(remediation.evidence or {}),
+            "before_after": comparison,
+            "revalidation_comparison": summary.comparison,
+            "revalidation_outcome": summary.result,
+        }
 
-    return remediation
+        if summary.result == "resolved":
+            remediation.status = remediation_status.VERIFIED
+            remediation.verified_at = datetime.now(timezone.utc)
+
+        elif summary.result == "still_vulnerable":
+            remediation.status = remediation_status.FAILED
+            remediation.verified_at = None
+
+        else:
+            remediation.status = remediation_status.MANUAL_ACTION_REQUIRED
+            remediation.verified_at = None
+            remediation.evidence["manual_action_reason"] = (
+                "Revalidation was inconclusive. Human review and further "
+                "verification are required before remediation can be "
+                "classified as resolved or still vulnerable."
+            )
+
+        db.add(remediation)
+        db.commit()
+        db.refresh(remediation)
+
+        logger.info(
+            "Remediation %s revalidation complete: outcome=%s status=%s",
+            remediation_id,
+            summary.result,
+            remediation.status,
+        )
+        return remediation
+
+    except Exception as exc:
+        # Recover the transaction before trying to persist the failure state.
+        logger.exception(
+            "Revalidation failed unexpectedly for remediation %s",
+            remediation_id,
+        )
+        db.rollback()
+
+        # Reload the row because rollback may expire ORM attributes.
+        remediation = (
+            db.query(Remediation)
+            .filter(Remediation.id == remediation_id)
+            .first()
+        )
+
+        if remediation is None:
+            raise
+
+        remediation.status = remediation_status.MANUAL_ACTION_REQUIRED
+        remediation.verified_at = None
+        remediation.evidence = {
+            **(remediation.evidence or {}),
+            "manual_action_reason": (
+                "Revalidation encountered an unexpected error. "
+                "Review the failure and rerun verification before "
+                "classifying the remediation as resolved."
+            ),
+            "revalidation_error": type(exc).__name__,
+        }
+
+        db.add(remediation)
+        db.commit()
+        db.refresh(remediation)
+        return remediation
+
 
 
 def _require_manual_action(db: Session, remediation: Remediation, reason: str) -> Remediation:
