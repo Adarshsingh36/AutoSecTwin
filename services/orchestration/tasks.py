@@ -30,6 +30,7 @@ def execute_orchestration_job(
     ttl_seconds: int | None,
     dispatch_backend: str,
     db: Session | None = None,
+    fixed_version: str | None = None,
 ) -> None:
     """Run the closed loop for `job_id` and persist the outcome onto its
     OrchestrationJob row. Never raises -- all failure is captured onto the
@@ -55,7 +56,11 @@ def execute_orchestration_job(
         try:
             orchestrator = ClosedLoopOrchestrator(session)
             summary = asyncio.run(
-                orchestrator.run(vulnerability_id, ttl_seconds=ttl_seconds)
+                orchestrator.run(
+                    vulnerability_id,
+                    ttl_seconds=ttl_seconds,
+                    fixed_version=fixed_version,
+                )
             )
 
             job.status = "completed"
@@ -83,6 +88,7 @@ def run_closed_loop_task(
     job_id: int,
     vulnerability_id: int,
     ttl_seconds: int | None = None,
+    fixed_version: str | None = None,
 ) -> None:
     """Celery entrypoint. Opens its own DB session -- Celery workers run in
     a separate process/thread from the FastAPI request that dispatched
@@ -95,4 +101,5 @@ def run_closed_loop_task(
         ttl_seconds=ttl_seconds,
         dispatch_backend="celery",
         db=None,
+        fixed_version=fixed_version,
     )
