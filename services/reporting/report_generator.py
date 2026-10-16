@@ -85,39 +85,143 @@ class ReportGenerator:
 
         exploit_evidence = getattr(initial_validation, "evidence", None) or {}
         revalidation_evidence = getattr(revalidation, "evidence", None) or {}
+        
+        initial_evidence = (getattr(initial_validation, "evidence", None) or {})
+        revalidation_evidence = (getattr(revalidation, "evidence", None) or {})
 
+        
+        remediation_evidence = getattr(remediation, "evidence", None) or {}
+
+        simulated_evidence = (
+            mock_mode
+            or self._is_simulated_evidence(initial_evidence)
+            or self._is_simulated_evidence(revalidation_evidence)
+            or self._is_simulated_evidence(remediation_evidence)
+        )
+
+
+        if simulated_evidence:
+            verification_conclusion = (
+                "SIMULATED — workflow evidence is not proof of real-world remediation."
+            )
+        
+        elif (
+            getattr(remediation, "status", None) == "verified"
+            and getattr(remediation, "verified_at", None) is not None
+            and getattr(revalidation, "status", None) == "failed"
+            and (before_after or {}).get("resolved") is True
+            ):
+            verification_conclusion = (
+                "VERIFIED — the persisted lifecycle records indicate "
+                "successful revalidation."
+                )
+
+        else:
+            verification_conclusion = (
+                "NOT VERIFIED — the available records do not establish successful remediation."
+            )
+
+        
         body: dict[str, Any] = {
             "report_type": "closed_loop",
             "title": title,
             "generated_in_mock_mode": mock_mode,
+            "verification_conclusion": verification_conclusion,
+            "simulated_evidence": simulated_evidence,
+        
             "1_executive_summary": self._executive_summary(
-                vulnerability, final_status, exploitability_probability, initial_validation, remediation
+                vulnerability,
+                final_status,
+                exploitability_probability,
+                initial_validation,
+                remediation,
+                simulated_evidence=simulated_evidence,
             ),
+
             "2_system_under_test": self._system_under_test(old_twin or twin, new_twin),
             "3_vulnerability_technical_analysis": self._vulnerability_technical_analysis(
                 vulnerability, cve_explanation
             ),
-            "4_detection_pipeline": self._detection_pipeline(vulnerability, exploitability_probability, exploit),
-            "5_exploit_technical_execution": self._exploit_technical_execution(exploit, exploit_evidence),
+            "4_detection_pipeline": self._detection_pipeline(
+                vulnerability, exploitability_probability, exploit
+            ),
+            "5_exploit_technical_execution": self._exploit_technical_execution(
+                exploit, exploit_evidence
+            ),
             "6_evidence_collected": self._evidence_collected(exploit_evidence),
             "7_validation_engine": self._validation_engine_section(initial_validation),
-            "8_recommendation": self._recommendation_section(recommendation, old_twin or twin, new_twin, approval),
+            "8_recommendation": self._recommendation_section(
+                recommendation, old_twin or twin, new_twin, approval
+            ),
             "9_human_approval": self._human_approval_section(approval),
-            "10_remediation_execution": self._remediation_execution_section(remediation, old_twin, new_twin),
-            "11_revalidation": self._revalidation_section(exploit, new_twin, revalidation, revalidation_evidence, revalidation_comparison),
-            "12_before_vs_after": before_after or {"note": "No before/after comparison is available yet for this remediation."},
-            "13_final_security_state": self._final_security_state(remediation, before_after),
-            "14_limitations": self._limitations(approval, cve_explanation, mock_mode),
+            "10_remediation_execution": self._remediation_execution_section(
+                remediation, old_twin, new_twin
+            ),
+            "11_revalidation": self._revalidation_section(
+                exploit,
+                new_twin,
+                revalidation,
+                revalidation_evidence,
+                revalidation_comparison,
+            ),
+            "12_before_vs_after": before_after or {
+            "note": "No before/after comparison is available yet for this remediation."
+            },
+            "13_final_security_state": self._final_security_state(
+                remediation,
+                before_after,
+                simulated_evidence=simulated_evidence,
+            ),
+            "14_limitations": self._limitations(
+                approval, cve_explanation, mock_mode
+            ),
             "15_technical_appendix": self._technical_appendix(
-                vulnerability, exploit, initial_validation, recommendation, approval, remediation, revalidation, old_twin, new_twin, audit_trail
+                vulnerability,
+                exploit,
+                initial_validation,
+                recommendation,
+                approval,
+                remediation,
+                revalidation,
+                old_twin,
+                new_twin,
+                audit_trail,
             ),
         }
         return json.dumps(body, indent=2, default=str)
 
+
     # -- section builders ---------------------------------------------------
 
     @staticmethod
-    def _executive_summary(vulnerability, final_status, exploitability_probability, initial_validation, remediation) -> dict[str, Any]:
+    def _executive_summary(
+        vulnerability,
+        final_status,
+        exploitability_probability,
+        initial_validation,
+        remediation,
+        simulated_evidence: bool = False,
+    ) -> dict[str, Any]:
+        if simulated_evidence:
+            summary = (
+                "The vulnerability was processed through the remediation workflow, "
+                "but simulated evidence means successful remediation has not been "
+                "established through real execution and revalidation."
+            )
+        elif final_status == "verified":
+            summary = (
+                f"{getattr(vulnerability, 'cve_id', 'This vulnerability')} "
+                "was processed through remediation and recorded as verified. "
+                "Review the validation evidence and its provenance before relying "
+                "on this conclusion."
+            )
+        else:
+            summary = (
+                f"{getattr(vulnerability, 'cve_id', 'This vulnerability')} "
+                "was processed through the remediation workflow. "
+                f"Final status: {final_status}."
+            )
+
         return {
             "asset": getattr(getattr(vulnerability, "asset", None), "name", None),
             "vulnerability": getattr(vulnerability, "cve_id", None),
@@ -127,12 +231,10 @@ class ReportGenerator:
             "initial_validation_result": getattr(initial_validation, "status", None),
             "remediation_result": getattr(remediation, "status", None),
             "final_status": final_status,
-            "summary": (
-                f"{getattr(vulnerability, 'cve_id', 'This vulnerability')} was validated against an "
-                f"isolated Digital Twin, {'remediated and revalidated' if final_status == 'verified' else 'processed through the remediation workflow'}. "
-                f"Final status: {final_status}."
-            ),
+            "simulated_evidence": simulated_evidence,
+            "summary": summary,
         }
+
 
     @staticmethod
     def _twin_snapshot(twin) -> Optional[dict[str, Any]]:
@@ -293,20 +395,62 @@ class ReportGenerator:
             "evidence": revalidation_evidence,
         }
 
+
     @staticmethod
-    def _final_security_state(remediation, before_after) -> dict[str, Any]:
+    def _is_simulated_evidence(evidence: dict[str, Any]) -> bool:
+        if not isinstance(evidence, dict):
+            return False
+
+        if evidence.get("simulated") is True:
+            return True
+
+        raw_result = evidence.get("raw_result")
+        if isinstance(raw_result, dict) and raw_result.get("simulated") is True:
+            return True
+
+        return False
+
+    @staticmethod
+    def _final_security_state(
+        remediation,
+        before_after,
+        simulated_evidence: bool = False,
+    ) -> dict[str, Any]:
         resolved = (before_after or {}).get("resolved")
+        remediation_status = getattr(remediation, "status", None)
+        verified_at = getattr(remediation, "verified_at", None)
+
+        if simulated_evidence:
+            statement = (
+                "The workflow contains simulated evidence. Successful remediation "
+                "against a real Digital Twin has not been established."
+            )
+            final_resolved = False
+        elif (
+            remediation_status == "verified"
+            and resolved is True
+            and verified_at is not None
+        ):
+            statement = (
+                "The persisted remediation and revalidation records indicate that "
+                "the vulnerability was verified as resolved. Confirm the evidence "
+                "provenance before treating this as proof of real-world remediation."
+            )
+            final_resolved = True
+        else:
+            statement = (
+                "The vulnerability remains exploitable, was not conclusively "
+                "resolved, or has not yet been revalidated. See sections 10 and 11 "
+                "for detail."
+            )
+            final_resolved = False
+
         return {
-            "status": getattr(remediation, "status", None),
-            "resolved": resolved,
-            "verified_at": getattr(remediation, "verified_at", None),
-            "statement": (
-                "The vulnerability was demonstrated to no longer be exploitable against the "
-                "remediated Digital Twin via an independent, real re-execution of the same exploit."
-                if resolved is True else
-                "The vulnerability remains exploitable, was not conclusively resolved, or has not "
-                "yet been revalidated -- see sections 10 and 11 for detail."
-            ),
+            "status": remediation_status,
+            "resolved": final_resolved,
+            "verified_at": verified_at,
+            "simulated_evidence": simulated_evidence,
+            "statement": statement,
         }
 
     @staticmethod
@@ -584,6 +728,11 @@ class ReportGenerator:
 
     @staticmethod
     def _summary(report_type: str, payload: dict[str, Any]) -> str:
+        plain_language = payload.get("plain_language")
+        if report_type == "technical" and isinstance(plain_language, dict):
+            summary = plain_language.get("summary")
+            if isinstance(summary, str) and summary:
+                return summary
         if report_type == "executive":
             return "Business risk, confidence, and remediation status summary."
         if report_type == "trust":
