@@ -11,19 +11,15 @@ async def main():
     print(token)
 
     print("\n=== MODULE INFO ===")
-    info = await client.get_module_info(
-        "auxiliary",
-        "scanner/http/http_version",
-    )
+    module_type = "exploit"
+    module_name = "windows/smb/ms17_010_eternalblue"
+    info = await client.get_module_info(module_type, module_name)
     print(info)
 
-    print("\n=== MODULE CHECK ===")
-    result = await client.check_module(
-        "auxiliary",
-        "scanner/http/http_version",
-        {},
-    )
-    print(result)
+    print("\n=== CHECK SUPPORT ===")
+    print("Supports check:", info.get("check"))
 
 
-asyncio.run(main())
+
+if __name__ == "__main__":
+    asyncio.run(main())
