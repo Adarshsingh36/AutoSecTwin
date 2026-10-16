@@ -10,15 +10,20 @@ covered separately once those pieces are real (Phase 3 onward).
 
 import time
 import uuid
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
 from core.config import settings
 from database.models.asset import Asset
 from database.models.exploit import Exploit
+from database.models.twin import Twin
+from database.models.validation import Validation
 from database.models.vulnerability import Vulnerability
 from database.session import SessionLocal
 from main import app
+from services.orchestration.validation_orchestrator import ValidationOrchestrator
+from services.twin_provisioning_service import TwinProvisioningService
 
 client = TestClient(app)
 
@@ -69,8 +74,55 @@ def test_run_orchestration_for_missing_vulnerability_returns_404():
     assert response.status_code == 404
 
 
-def test_run_orchestration_happy_path_completes_via_inline_dispatch():
+def test_run_orchestration_happy_path_completes_via_inline_dispatch(monkeypatch):
+    monkeypatch.setattr(settings, "MOCK_MODE", True)
+    monkeypatch.setattr(settings, "TASK_QUEUE_BACKEND", "inline")
     assert settings.MOCK_MODE is True, "This test requires MOCK_MODE=true"
+
+    async def provision_twin(service, vulnerability_id, ttl_seconds=None):
+        vulnerability = service.db.get(Vulnerability, vulnerability_id)
+        twin = Twin(
+            asset_id=vulnerability.asset_id,
+            name="test-orchestration-twin",
+            provider="TwinGenerator",
+            status="ready",
+            health="healthy",
+            twin_image="apache/activemq-classic:5.17.3",
+        )
+        service.db.add(twin)
+        service.db.commit()
+        service.db.refresh(twin)
+        return twin
+
+    async def return_ready_twin(service, twin):
+        return twin
+
+    async def validate_against_twin(orchestrator, db, exploit, twin):
+        validation = Validation(
+            vulnerability_id=exploit.vulnerability_id,
+            exploit_id=exploit.id,
+            twin_id=twin.id,
+            status="validated",
+            validation_score=0.9,
+            phase="initial",
+            analysis="Controlled test validation succeeded.",
+            evidence={
+                "execution_outcome": "session_established",
+                "session_id": "test-session",
+                "simulated": True,
+            },
+        )
+        db.add(validation)
+        db.commit()
+        db.refresh(validation)
+        return SimpleNamespace(
+            validation=validation,
+            readiness=SimpleNamespace(ready=True, reasons=[]),
+        )
+
+    monkeypatch.setattr(TwinProvisioningService, "provision", provision_twin)
+    monkeypatch.setattr(TwinProvisioningService, "wait_until_ready", return_ready_twin)
+    monkeypatch.setattr(ValidationOrchestrator, "validate", validate_against_twin)
 
     db = SessionLocal()
     try:
@@ -80,7 +132,8 @@ def test_run_orchestration_happy_path_completes_via_inline_dispatch():
         db.close()
 
     response = client.post(
-        "/orchestration/run", json={"vulnerability_id": vulnerability_id}
+        "/orchestration/run",
+        json={"vulnerability_id": vulnerability_id, "fixed_version": "5.17.6"},
     )
     assert response.status_code == 202
     body = response.json()
@@ -116,10 +169,13 @@ def test_run_orchestration_happy_path_completes_via_inline_dispatch():
     assert summary["twin_id"] is not None
     assert summary["exploit_id"] is not None
     assert summary["validation_id"] is not None
+    assert summary["report_id"] is not None
     assert summary["next_step"] in (
         "awaiting_human_approval",
         "not_validated_no_recommendation_generated",
     )
+    if summary["next_step"] == "awaiting_human_approval":
+        assert summary["approval_id"] is not None
 
 
 def test_get_missing_orchestration_job_returns_404():
