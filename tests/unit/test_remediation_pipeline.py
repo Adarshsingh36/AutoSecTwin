@@ -28,6 +28,7 @@ from database.models.twin import Twin
 from database.models.validation import Validation
 from database.models.vulnerability import Vulnerability
 from services.remediation import status as remediation_status
+from services.remediation import tasks as remediation_tasks
 from services.remediation.pipeline import run_remediation_pipeline, run_revalidation_only
 from services.revalidation.revalidation_engine import RevalidationSummary
 
@@ -320,3 +321,30 @@ async def test_pipeline_with_run_revalidation_false_stops_after_execute(db):
 
     assert result.status == remediation_status.EXECUTED
     MockEngine.return_value.run.assert_not_called()
+
+
+def test_remediation_job_persists_final_report(db, monkeypatch):
+    _, _, remediation = _seed(db)
+    report_calls = []
+
+    async def fake_pipeline(session, remediation_id, fixed_version, run_revalidation=True):
+        return session.get(Remediation, remediation_id)
+
+    monkeypatch.setattr(remediation_tasks, "run_remediation_pipeline", fake_pipeline)
+    monkeypatch.setattr(
+        remediation_tasks,
+        "persist_closed_loop_report",
+        lambda session, remediation_id: (
+            report_calls.append(remediation_id) or SimpleNamespace(id=73)
+        ),
+    )
+
+    remediation_tasks.execute_remediation_job(
+        remediation.id,
+        fixed_version="5.17.6",
+        run_revalidation=True,
+        db=db,
+    )
+
+    assert report_calls == [remediation.id]
+    assert remediation.evidence["closed_loop_report_id"] == 73
