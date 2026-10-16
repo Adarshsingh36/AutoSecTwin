@@ -2,6 +2,8 @@ from unittest.mock import AsyncMock, patch
 
 from database.models.asset import Asset
 from database.models.exploit import Exploit
+from database.models.recommendation import Recommendation
+from database.models.report import Report
 from database.models.remediation import Remediation
 from database.models.twin import Twin
 from database.models.validation import Validation
@@ -168,10 +170,92 @@ def test_create_validation_persists_with_vulnerability_id(client, db):
     assert body["vulnerability_id"] == vuln.id
     assert body["phase"] == "initial"
     assert body["status"] in {"validated", "failed", "inconclusive"}
+    assert body["report_id"] is not None
+    assert body["approval_id"] is not None
+    assert body["review_url"] == f"/approvals/{body['approval_id']}/review"
+    review_page = client.get(body["review_url"])
+    assert review_page.status_code == 200
+    assert "Your decision" in review_page.text
+    assert client.get("/workflow/intake").status_code == 200
+    report = db.get(Report, body["report_id"])
+    assert report is not None
+    assert report.metadata_json["evidence_source"] == "user_submitted_evidence"
+    report_body = __import__("json").loads(report.content)
+    assert "plain_language" in report_body["findings"]
+    assert report_body["summary"]
+    if body["status"] == "validated":
+        assert body["recommendation_id"] is not None
+
+    revision = client.patch(
+        f"/approvals/{body['approval_id']}/decision",
+        json={
+            "decided_by": "security-reviewer",
+            "human_response": "Please change the recommendation to also restrict access to the FTP service.",
+        },
+    )
+    assert revision.status_code == 200, revision.text
+    assert revision.json()["status"] == "pending"
+    assert revision.json()["response_interpretation"] == "revision_requested"
+    revision_context = revision.json()["context"]
+    assert revision_context["revision_history"][-1]["interpretation"] == "revision_requested"
+    revised_content = revision_context["review_package"]["recommendation"]["content"]
+    assert "restrict access to the FTP service" in revised_content
+    revised_report_id = revision_context["review_package"]["report_id"]
+    assert revised_report_id != body["report_id"]
+    revised_report = db.get(Report, revised_report_id)
+    assert revised_report is not None
+    assert "reviewer_requested_changes" in revised_report.content
+
+    accepted = client.patch(
+        f"/approvals/{body['approval_id']}/decision",
+        json={
+            "decided_by": "security-reviewer",
+            "human_response": "Yes, accept the recommendations for reporting only.",
+        },
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["status"] == "approved"
+    assert accepted.json()["remediation_id"] is None
+    assert accepted.json()["context"]["decision_report_id"] is not None
+    assert len(client.get("/learning/").json()) >= 3
 
     stored = db.query(Validation).first()
     assert stored is not None
     assert stored.vulnerability_id == vuln.id  # regression check for the NOT NULL bug fixed earlier
+
+
+def test_submitted_findings_get_recommendation_without_claiming_exploitation(client, db):
+    asset = _seed_asset(db)
+    vuln = _seed_vulnerability(db, asset)
+    evidence = {
+        "source": "manual_http_assessment",
+        "target": "http://192.168.56.1:3000",
+        "exploitation_demonstrated": False,
+        "findings": [
+            {
+                "id": "F-01",
+                "title": "Exposed FTP directory listing",
+                "endpoint": "GET /ftp/",
+                "http_status": 200,
+                "status": "confirmed_directory_listing",
+            }
+        ],
+    }
+
+    response = client.post(
+        "/validations/",
+        json={"vulnerability_id": vuln.id, "evidence": evidence},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "inconclusive"
+    assert body["recommendation_id"] is not None
+    report = db.get(Report, body["report_id"])
+    assert report is not None
+    assert "exploitation_demonstrated" in report.content
+    recommendation = db.get(Recommendation, body["recommendation_id"])
+    assert recommendation is not None
 
 
 def test_get_validation_404_for_missing_id(client):
