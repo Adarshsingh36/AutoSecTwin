@@ -14,10 +14,25 @@ import logging
 from sqlalchemy.orm import Session
 
 from core.celery_app import celery_app
+from database.models.remediation import Remediation
 from database.session import SessionLocal
+from services.reporting.closed_loop_report_service import persist_closed_loop_report
 from services.remediation.pipeline import run_remediation_pipeline, run_revalidation_only
 
 logger = logging.getLogger(__name__)
+
+
+def _persist_final_report(session: Session, remediation_id: int) -> None:
+    report = persist_closed_loop_report(session, remediation_id)
+    remediation = session.get(Remediation, remediation_id)
+    if remediation is None:
+        return
+
+    remediation.evidence = {
+        **(remediation.evidence or {}),
+        "closed_loop_report_id": report.id,
+    }
+    session.commit()
 
 
 def execute_remediation_job(
@@ -43,7 +58,13 @@ def execute_remediation_job(
             )
         )
     except Exception:  # noqa: BLE001 - background job boundary
+        session.rollback()
         logger.exception("Remediation pipeline job failed for remediation %s", remediation_id)
+    try:
+        _persist_final_report(session, remediation_id)
+    except Exception:  # noqa: BLE001 - report generation must not mask job outcome
+        session.rollback()
+        logger.exception("Final report generation failed for remediation %s", remediation_id)
     finally:
         if owns_session:
             session.close()
@@ -63,7 +84,13 @@ def revalidate_remediation_job(
     try:
         asyncio.run(run_revalidation_only(session, remediation_id))
     except Exception:  # noqa: BLE001 - background job boundary
+        session.rollback()
         logger.exception("Revalidation job failed for remediation %s", remediation_id)
+    try:
+        _persist_final_report(session, remediation_id)
+    except Exception:  # noqa: BLE001 - report generation must not mask job outcome
+        session.rollback()
+        logger.exception("Final report generation failed for remediation %s", remediation_id)
     finally:
         if owns_session:
             session.close()
