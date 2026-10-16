@@ -4,7 +4,7 @@ from fastapi import Depends, FastAPI
 from sqlalchemy import text
 
 from api.routes import approvals, auth, exploits, legacy, recommendation, remediation, reports, trust, validations, vulnerabilities
-from api.routes import confidence, learning, orchestration, twins
+from api.routes import confidence, learning, orchestration, twins, workflow_ui
 from api.routes import code_remediation
 from core.config import settings
 from core.exceptions import ASDEError, asde_exception_handler, not_found_handler
@@ -36,6 +36,7 @@ app.include_router(twins.router, prefix="/twins",tags=["Twins"], dependencies=re
 app.include_router(learning.router, prefix="/learning", tags=["Continuous Learning"], dependencies=read_access)
 app.include_router(orchestration.router, prefix="/orchestration", tags=["Orchestration"], dependencies=read_access)
 app.include_router(code_remediation.router, prefix="/code-remediation", tags=["Code Remediation"], dependencies=read_access)
+app.include_router(workflow_ui.router, prefix="/workflow", tags=["Workflow UI"], dependencies=read_access)
 
 
 def check_database_connection() -> bool:
