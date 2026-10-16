@@ -98,26 +98,60 @@ class RevalidationEngine:
         revalidation_score = float(revalidation.validation_score or 0.0)
         improvement = initial_score - revalidation_score
 
-        execution_outcome = (revalidation.evidence or {}).get("execution_outcome")
+        
+        initial_evidence = getattr(initial_validation, "evidence", None) or {}
+        revalidation_evidence = getattr(revalidation, "evidence", None) or {}
+        remediation_evidence = getattr(remediation, "evidence", None) or {}
 
-        if execution_outcome in self._INCONCLUSIVE_EXECUTION_OUTCOMES:
-            # The re-run itself didn't produce a real answer (timeout, RPC
-            # failure) -- this is an absence of evidence, never grounds to
-            # call the vulnerability resolved.
+        execution_outcome = revalidation_evidence.get("execution_outcome")
+
+        def _is_simulated(evidence: Any) -> bool:
+            if not isinstance(evidence, dict):
+                return False
+
+            if evidence.get("simulated") is True:
+                return True
+
+            raw_result = evidence.get("raw_result")
+            return (
+                isinstance(raw_result, dict)
+                and raw_result.get("simulated") is True
+            )
+
+        any_simulated = any(
+            _is_simulated(evidence)
+            for evidence in (
+                initial_evidence,
+                remediation_evidence,
+                revalidation_evidence,
+            )
+        )
+
+        if any_simulated:
             outcome = "inconclusive"
-        elif revalidation.status == "failed":
-            # A confirmed negative: the module ran to completion and did
-            # not get a session. A true "not exploitable anymore" answer.
-            outcome = "resolved"
-        elif revalidation.status == "validated":
-            # The exploit worked again, post-remediation -- the fix didn't
-            # hold, regardless of how much the score moved.
-            outcome = "still_vulnerable"
+
+        elif execution_outcome in self._INCONCLUSIVE_EXECUTION_OUTCOMES:
+            outcome = "inconclusive"
+
+        elif execution_outcome == "session_established":
+            outcome = (
+                "still_vulnerable"
+                if revalidation.status == "validated"
+                else "inconclusive"
+            )
+
+        elif execution_outcome == "confirmed_no_session":
+            outcome = (
+                "resolved"
+                if revalidation.status == "failed"
+                else "inconclusive"
+            )
+
         else:
-            # "inconclusive" from normal scoring (e.g. a confirmed-no-
-            # session result that still cleared the inconclusive score
-            # band) -- a real signal, just not a strong enough one either way.
+            # Missing or unknown execution evidence is not proof
+            # that remediation succeeded.
             outcome = "inconclusive"
+
 
         comparison = (
             f"Initial score: {initial_score:.2f} -> Post-remediation score: {revalidation_score:.2f} "
