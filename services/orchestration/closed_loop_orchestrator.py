@@ -30,6 +30,7 @@ run doesn't proceed to remediation.
 from __future__ import annotations
 
 import logging
+import json
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -37,8 +38,11 @@ from sqlalchemy.orm import Session
 from core.config import settings
 from core.exceptions import ASDEError
 from database.models.exploit import Exploit
+from database.models.vulnerability import Vulnerability
+from services.approval.workflow import request_approval, request_recommendation_review
 from services.orchestration.validation_orchestrator import ValidationOrchestrator
 from services.recommendation.recommendation_engine import RecommendationEngine
+from services.reporting.workflow_report_service import create_validation_report
 from services.twin_provisioning_service import TwinProvisioningService
 
 logger = logging.getLogger(__name__)
@@ -91,9 +95,10 @@ class ClosedLoopOrchestrator:
         self,
         vulnerability_id: int,
         ttl_seconds: int | None = None,
+        fixed_version: str | None = None,
     ) -> dict[str, Any]:
-        """Run provisioning -> validation -> recommendation for one
-        vulnerability. Returns a JSON-serializable summary. Raises
+        """Run provisioning -> validation -> report/recommendation/approval
+        preparation for one vulnerability. Returns a JSON-serializable summary. Raises
         ClosedLoopOrchestrationError (or lets underlying HTTPException/
         RuntimeError propagate) on failure -- the caller (the Celery task
         or the inline BackgroundTasks runner) is responsible for catching
@@ -110,6 +115,7 @@ class ClosedLoopOrchestrator:
         twin = await self.provisioning_service.wait_until_ready(twin)
 
         result = await self.validation_orchestrator.validate(self.db, exploit, twin)
+        fixed_version = fixed_version.strip() if fixed_version else None
 
         summary: dict[str, Any] = {
             "vulnerability_id": vulnerability_id,
@@ -121,6 +127,8 @@ class ClosedLoopOrchestrator:
             "validation_score": result.validation.validation_score,
             "readiness_ready": result.readiness.ready,
         }
+        recommendation = None
+        approval = None
 
         if not result.readiness.ready:
             summary["next_step"] = "not_ready_for_execution"
@@ -129,17 +137,99 @@ class ClosedLoopOrchestrator:
                 "Closed loop run for vulnerability %s stopped: readiness gate failed.",
                 vulnerability_id,
             )
-            return summary
-
-        if result.validation.status == "validated":
+        elif result.validation.status == "validated":
             recommendation = self.recommendation_engine.generate(
                 vulnerability_id=vulnerability_id,
                 recommendation_type="patch",
             )
             summary["recommendation_id"] = recommendation.id
-            summary["next_step"] = "awaiting_human_approval"
+            report = create_validation_report(
+                self.db,
+                vulnerability=self.db.get(Vulnerability, vulnerability_id),
+                validation=result.validation,
+                exploit=exploit,
+                twin=twin,
+                recommendation=recommendation,
+                evidence_source=(
+                    "simulated_twin_validation"
+                    if settings.MOCK_MODE
+                    else "controlled_twin_validation"
+                ),
+            )
+            if fixed_version:
+                approval = request_approval(
+                    self.db,
+                    vulnerability_id=vulnerability_id,
+                    target_twin_id=twin.id,
+                    fixed_version=fixed_version,
+                    recommendation_id=recommendation.id,
+                )
+                summary["next_step"] = "awaiting_human_approval"
+            else:
+                report_body = json.loads(report.content)
+                report_findings = report_body.get("findings", {})
+                approval = request_recommendation_review(
+                    self.db,
+                    vulnerability_id=vulnerability_id,
+                    recommendation_id=recommendation.id,
+                    report_id=report.id,
+                    review_package={
+                        "vulnerability": {
+                            "id": vulnerability_id,
+                            "cve_id": getattr(
+                                self.db.get(Vulnerability, vulnerability_id), "cve_id", None
+                            ),
+                            "title": getattr(
+                                self.db.get(Vulnerability, vulnerability_id), "title", None
+                            ),
+                        },
+                        "plain_language": report_findings.get("plain_language", {}),
+                        "validation_status": result.validation.status,
+                        "findings": (result.validation.evidence or {}).get("findings", []),
+                        "recommendation": {
+                            "id": recommendation.id,
+                            "title": recommendation.title,
+                            "content": recommendation.content,
+                        },
+                        "report_id": report.id,
+                        "limitations": [
+                            "This review accepts or rejects the recommendation only; it does not deploy a patch.",
+                            "A separate approval tied to a Digital Twin and fixed version is required for deployment.",
+                        ],
+                    },
+                )
+                summary["next_step"] = "awaiting_human_review"
         else:
             summary["next_step"] = "not_validated_no_recommendation_generated"
+
+        if result.readiness.ready and result.validation.status == "validated":
+            summary["report_id"] = report.id
+        else:
+            report = create_validation_report(
+                self.db,
+                vulnerability=self.db.get(Vulnerability, vulnerability_id),
+                validation=result.validation,
+                exploit=exploit,
+                twin=twin,
+                evidence_source=(
+                    "simulated_twin_validation"
+                    if settings.MOCK_MODE
+                    else "controlled_twin_validation"
+                ),
+            )
+            summary["report_id"] = report.id
+        if approval is not None:
+            review_package = dict((approval.context or {}).get("review_package") or {})
+            review_package["report_id"] = report.id
+            approval.context = {
+                **(approval.context or {}),
+                "report_id": report.id,
+                "validation_report_id": report.id,
+                "review_package": review_package,
+            }
+            self.db.commit()
+            summary["approval_id"] = approval.id
+            summary["review_url"] = f"/approvals/{approval.id}/review"
 
         logger.info(
             "Closed loop run for vulnerability %s completed: %s",
