@@ -103,6 +103,10 @@ class ValidationResponse(ValidationCreate):
     validation_score: float
     phase: str = "initial"
     analysis: str | None = None
+    report_id: int | None = None
+    recommendation_id: int | None = None
+    approval_id: int | None = None
+    review_url: str | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -232,9 +236,10 @@ class ApprovalCreate(BaseModel):
 
 
 class ApprovalDecision(BaseModel):
-    status: str
-    decided_by: str
+    status: str | None = None
+    decided_by: str | None = None
     decision_reason: str | None = None
+    human_response: str | None = None
 
 
 class ApprovalResponse(ApprovalCreate):
@@ -245,6 +250,8 @@ class ApprovalResponse(ApprovalCreate):
     decision_reason: str | None = None
     created_at: datetime
     decided_at: datetime | None = None
+    review_url: str | None = None
+    response_interpretation: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -387,6 +394,7 @@ class CodeChangeApplyResponse(BaseModel):
 class OrchestrationRunRequest(BaseModel):
     vulnerability_id: int
     ttl_seconds: int | None = None
+    fixed_version: str | None = Field(default=None, min_length=1)
 
 
 class OrchestrationJobResponse(BaseModel):
