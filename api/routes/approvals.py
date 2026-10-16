@@ -1,6 +1,8 @@
 import logging
+from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from api.dependencies import get_db, pagination
@@ -11,7 +13,13 @@ from database.models.approval import Approval
 from database.models.legacy import SpecialistQueue
 from database.models.trust import HallucinationLog
 from services.approval import workflow
+from services.approval.response_parser import interpret_human_response
 from services.remediation.tasks import execute_remediation_job, execute_remediation_task
+from services.reporting.workflow_report_service import (
+    create_approval_decision_report,
+    revise_recommendation_review,
+)
+from services.learning.event_recorder import record_learning_event
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -20,6 +28,8 @@ logger = logging.getLogger(__name__)
 def _to_response(approval: Approval) -> ApprovalResponse:
     response = ApprovalResponse.model_validate(approval)
     response.fixed_version = (approval.context or {}).get("fixed_version")
+    response.review_url = f"/approvals/{approval.id}/review"
+    response.response_interpretation = (approval.context or {}).get("response_interpretation")
     return response
 
 
@@ -67,15 +77,73 @@ def decide_approval(
     destroy/provision/exploit re-run.
     """
 
+    pending_approval = db.query(Approval).filter(Approval.id == approval_id).first()
+    if pending_approval is None:
+        raise HTTPException(status_code=404, detail=f"Approval {approval_id} not found.")
+
+    text_decision = interpret_human_response(payload.human_response)
+    decision = payload.status
+    if decision is None:
+        decision = text_decision
+
+    if text_decision == "revision_requested" or (
+        payload.status is None and text_decision == "unclear"
+    ):
+        approval = pending_approval
+        if approval.status != "pending":
+            raise HTTPException(status_code=409, detail="This approval has already been decided.")
+        revise_recommendation_review(db, approval, payload.human_response or "")
+        record_learning_event(
+            db,
+            event_type="human_review_feedback",
+            source="approval_review",
+            label=text_decision,
+            payload={"approval_id": approval.id, "human_response": payload.human_response},
+            notes="Response retained for follow-up; no approval or deployment was performed.",
+        )
+        return _to_response(approval)
+
+    if decision not in ("approved", "rejected"):
+        raise HTTPException(
+            status_code=422,
+            detail="Respond with a clear yes/approve or no/reject, or request a proposal revision.",
+        )
+
+    if text_decision in ("approved", "rejected") and text_decision != decision:
+        raise HTTPException(
+            status_code=422,
+            detail="The selected decision conflicts with the written response. Please submit one clear decision.",
+        )
+
+    if decision == "approved" and (pending_approval.context or {}).get("reproposal_required"):
+        raise HTTPException(
+            status_code=409,
+            detail="This proposal was changed by reviewer feedback. Create and review a new approval before deployment.",
+        )
+
     approval = workflow.decide(
         db,
         approval_id=approval_id,
-        decision=payload.status,
-        decided_by=payload.decided_by,
-        decision_reason=payload.decision_reason,
+        decision=decision,
+        decided_by=payload.decided_by or "reviewer",
+        decision_reason=payload.decision_reason or payload.human_response,
     )
+    approval.context = {
+        **(approval.context or {}),
+        "human_response": payload.human_response,
+        "response_interpretation": text_decision,
+    }
+    db.commit()
+    db.refresh(approval)
+    decision_report = create_approval_decision_report(db, approval)
+    approval.context = {
+        **(approval.context or {}),
+        "decision_report_id": decision_report.id,
+    }
+    db.commit()
+    db.refresh(approval)
 
-    if payload.status == "approved" and settings.REMEDIATION_AUTO_APPLY and approval.remediation_id:
+    if decision == "approved" and settings.REMEDIATION_AUTO_APPLY and approval.remediation_id:
         fixed_version = (approval.context or {}).get("fixed_version")
         if fixed_version:
             _dispatch_remediation_execution(
@@ -90,6 +158,15 @@ def decide_approval(
             )
 
     return _to_response(approval)
+
+
+@router.get("/{approval_id}/review", response_class=FileResponse)
+def get_approval_review_page(approval_id: int, db: Session = Depends(get_db)) -> FileResponse:
+    approval = db.query(Approval).filter(Approval.id == approval_id).first()
+    if approval is None:
+        raise HTTPException(status_code=404, detail="Approval not found")
+    page = Path(__file__).resolve().parents[1] / "static" / "approval_review.html"
+    return FileResponse(page, media_type="text/html")
 
 
 def _dispatch_remediation_execution(
@@ -177,3 +254,11 @@ def list_hallucination_review_queue(
         }
         for row in rows
     ]
+
+
+@router.get("/{approval_id}", response_model=ApprovalResponse)
+def get_approval(approval_id: int, db: Session = Depends(get_db)) -> ApprovalResponse:
+    approval = db.query(Approval).filter(Approval.id == approval_id).first()
+    if approval is None:
+        raise HTTPException(status_code=404, detail="Approval not found")
+    return _to_response(approval)
