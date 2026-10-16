@@ -9,14 +9,16 @@ this module is the only place that queries the database for report data.
 
 from __future__ import annotations
 
+import json
 from typing import Any, Optional
 
 from sqlalchemy.orm import Session
-
+from core.config import settings
 from database.models.approval import Approval
 from database.models.exploit import Exploit
 from database.models.recommendation import Recommendation
 from database.models.remediation import Remediation
+from database.models.report import Report
 from database.models.twin import Twin
 from database.models.validation import Validation
 from database.models.vulnerability import Vulnerability
@@ -91,7 +93,8 @@ def build_closed_loop_report(db: Session, remediation_id: int) -> str:
 
     title = (
         f"AutoSecTwin Closed-Loop Remediation Report -- "
-        f"{getattr(vulnerability, 'cve_id', 'Unknown CVE')} (Remediation #{remediation.id})"
+        f"{getattr(vulnerability, 'cve_id', 'Unknown CVE')} "
+        f"(Remediation #{remediation.id})"
     )
 
     return ReportGenerator().generate_closed_loop_report(
@@ -110,17 +113,82 @@ def build_closed_loop_report(db: Session, remediation_id: int) -> str:
         before_after=evidence.get("before_after"),
         final_status=final_status,
         audit_trail=audit_trail,
-        exploitability_probability=getattr(vulnerability, "exploitability_probability", None),
-        mock_mode=_any_simulated(initial_validation, revalidation),
+        exploitability_probability=getattr(
+            vulnerability, "exploitability_probability", None
+        ),
+        mock_mode=settings.MOCK_MODE,
     )
 
 
-def _any_simulated(*validations: Optional[Validation]) -> bool:
-    for validation in validations:
-        if validation is not None and (validation.evidence or {}).get("raw_result", {}).get("simulated"):
-            return True
+def persist_closed_loop_report(db: Session, remediation_id: int) -> Report:
+    """Create or refresh the final report for a remediation workflow."""
+
+    remediation = db.get(Remediation, remediation_id)
+    if remediation is None:
+        raise ValueError(f"Remediation {remediation_id} not found.")
+
+    content = build_closed_loop_report(db, remediation_id)
+    body = json.loads(content)
+    metadata = {"remediation_id": remediation_id}
+    reports = (
+        db.query(Report)
+        .filter(
+            Report.vulnerability_id == remediation.vulnerability_id,
+            Report.report_type == "closed_loop",
+        )
+        .order_by(Report.id.desc())
+        .all()
+    )
+    report = next(
+        (
+            candidate
+            for candidate in reports
+            if (candidate.metadata_json or {}).get("remediation_id") == remediation_id
+        ),
+        None,
+    )
+    if report is None:
+        report = Report(
+            vulnerability_id=remediation.vulnerability_id,
+            report_type="closed_loop",
+            title=body.get("title", f"Closed-Loop Report: Remediation {remediation_id}"),
+            content=content,
+            format="json",
+            metadata_json=metadata,
+        )
+        db.add(report)
+    else:
+        report.title = body.get("title", report.title)
+        report.content = content
+        report.metadata_json = metadata
+
+    db.commit()
+    db.refresh(report)
+    return report
+
+def _is_simulated_evidence(evidence: Any) -> bool:
+    """Detect simulation markers in current and legacy evidence formats."""
+    if not isinstance(evidence, dict):
+        return False
+
+    if evidence.get("simulated") is True:
+        return True
+
+    raw_result = evidence.get("raw_result")
+    if isinstance(raw_result, dict) and raw_result.get("simulated") is True:
+        return True
+
     return False
 
+
+def _any_simulated(*validations) -> bool:
+    """Return True if any supplied validation contains simulation markers."""
+    for validation in validations:
+        evidence = getattr(validation, "evidence", None) or {}
+        if _is_simulated_evidence(evidence):
+            return True
+
+    return False
 
 def _build_audit_trail(
     vulnerability: Optional[Vulnerability],
