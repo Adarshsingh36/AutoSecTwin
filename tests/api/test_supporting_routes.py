@@ -1,5 +1,8 @@
 from database.models.asset import Asset
+from database.models.remediation import Remediation
+from database.models.twin import Twin
 from database.models.vulnerability import Vulnerability
+from core.config import settings
 
 
 def _seed_vulnerability(db) -> Vulnerability:
@@ -19,12 +22,29 @@ def _seed_vulnerability(db) -> Vulnerability:
 # ---------------------------------------------------------------------
 
 
-def test_approval_create_decide_and_list(client, db):
+def test_approval_create_decide_and_list(client, db, monkeypatch):
     vuln = _seed_vulnerability(db)
+    twin = Twin(
+        asset_id=vuln.asset_id,
+        name="review-twin",
+        provider="TwinGenerator",
+        status="ready",
+        twin_image="test/app:1.0.0",
+    )
+    db.add(twin)
+    db.commit()
+    db.refresh(twin)
+    monkeypatch.setattr(settings, "REMEDIATION_AUTO_APPLY", False)
 
     create_resp = client.post(
         "/approvals/",
-        json={"vulnerability_id": vuln.id, "requested_action": "apply_remediation", "requested_by": "analyst1"},
+        json={
+            "vulnerability_id": vuln.id,
+            "target_twin_id": twin.id,
+            "fixed_version": "1.0.1",
+            "requested_action": "apply_patch",
+            "requested_by": "analyst1",
+        },
     )
     assert create_resp.status_code == 200, create_resp.text
     approval_id = create_resp.json()["id"]
@@ -49,6 +69,47 @@ def test_approval_decide_404_for_missing_id(client):
         json={"status": "approved", "decided_by": "manager1"},
     )
     assert response.status_code == 404
+
+
+def test_revision_request_locks_executable_approval(client, db):
+    vulnerability = _seed_vulnerability(db)
+    twin = Twin(
+        asset_id=vulnerability.asset_id,
+        name="revision-test-twin",
+        provider="TwinGenerator",
+        status="ready",
+        twin_image="test/app:1.0.0",
+    )
+    db.add(twin)
+    db.commit()
+    db.refresh(twin)
+
+    created = client.post(
+        "/approvals/",
+        json={
+            "vulnerability_id": vulnerability.id,
+            "target_twin_id": twin.id,
+            "fixed_version": "1.0.1",
+            "requested_action": "apply_patch",
+        },
+    )
+    assert created.status_code == 200, created.text
+    approval_id = created.json()["id"]
+
+    revision = client.patch(
+        f"/approvals/{approval_id}/decision",
+        json={"human_response": "Change the fixed version to 1.0.2 before proceeding."},
+    )
+    assert revision.status_code == 200, revision.text
+    assert revision.json()["status"] == "pending"
+    assert revision.json()["context"]["reproposal_required"] is True
+
+    approval = client.patch(
+        f"/approvals/{approval_id}/decision",
+        json={"status": "approved", "decided_by": "reviewer"},
+    )
+    assert approval.status_code == 409
+    assert db.query(Remediation).count() == 0
 
 
 def test_approvals_legacy_and_hallucination_queues_start_empty(client):
