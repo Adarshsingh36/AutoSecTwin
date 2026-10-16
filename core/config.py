@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     DB_USER: str = "postgres"
     DB_PASSWORD: str | None = None
 
-    AUTH_ENABLED: bool = True
+    AUTH_ENABLED: bool = False
     AUTH_SECRET_KEY: str | None = None
     AUTH_TOKEN_TTL_SECONDS: int = 3600
     # JSON object: {"username": {"password_hash": "...", "roles": ["admin"]}}
