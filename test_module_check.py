@@ -59,6 +59,19 @@ async def main():
     )
 
     print(completion)
+    
+    print("\n=== ACTUAL MODULE CHECK RESULT ===")
+
+    if completion.get("completed"):
+        check_result = await client._call_raw([
+            "module.results",
+            client._token,
+            result["uuid"],
+        ])
+        print(check_result)
+    else:
+        print("Job did not complete; no final verdict available.")
+
 
     print("\n=== FINAL JOB LIST ===")
 
