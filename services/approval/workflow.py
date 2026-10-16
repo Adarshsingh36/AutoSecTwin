@@ -201,6 +201,35 @@ def request_approval(
     return approval
 
 
+def request_recommendation_review(
+    db: Session,
+    vulnerability_id: int,
+    recommendation_id: int | None,
+    report_id: int,
+    review_package: dict[str, Any],
+    requested_by: Optional[str] = None,
+) -> Approval:
+    """Request human review of a recommendation without authorizing a deploy."""
+
+    approval = Approval(
+        vulnerability_id=vulnerability_id,
+        recommendation_id=recommendation_id,
+        target_twin_id=None,
+        requested_action="recommend_only",
+        requested_by=requested_by,
+        status="pending",
+        context={
+            "review_mode": "recommendation_only",
+            "report_id": report_id,
+            "review_package": review_package,
+        },
+    )
+    db.add(approval)
+    db.commit()
+    db.refresh(approval)
+    return approval
+
+
 
 def decide(
     db: Session,
@@ -280,6 +309,26 @@ def decide(
         # An approved action must have a recorded target and fixed version.
         context = approval.context or {}
         fixed_version = context.get("fixed_version")
+
+        if approval.requested_action == "recommend_only":
+            if approval.recommendation_id is not None:
+                recommendation = (
+                    db.query(Recommendation)
+                    .filter(Recommendation.id == approval.recommendation_id)
+                    .first()
+                )
+                if recommendation is None or recommendation.vulnerability_id != approval.vulnerability_id:
+                    raise ApprovalWorkflowError(
+                        "The linked recommendation does not match the approval vulnerability."
+                    )
+            db.commit()
+            db.refresh(approval)
+            logger.info(
+                "Recommendation %s accepted by %s; no deployment was authorized.",
+                approval.recommendation_id,
+                decided_by,
+            )
+            return approval
 
         if approval.target_twin_id is None:
             raise ApprovalWorkflowError(
