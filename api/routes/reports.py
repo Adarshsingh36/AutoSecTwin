@@ -1,4 +1,3 @@
-import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,7 +9,7 @@ from api.schemas.autosectwin import ReportCreate, ReportResponse
 from database.models.remediation import Remediation
 from database.models.report import Report
 from database.models.vulnerability import Vulnerability
-from services.reporting.closed_loop_report_service import build_closed_loop_report
+from services.reporting.closed_loop_report_service import persist_closed_loop_report
 from services.reporting.report_generator import ReportGenerator
 
 router = APIRouter()
@@ -35,25 +34,9 @@ def create_closed_loop_report(remediation_id: int, db: Session = Depends(get_db)
         raise HTTPException(status_code=404, detail=f"Remediation {remediation_id} not found")
 
     try:
-        content = build_closed_loop_report(db, remediation_id)
+        return persist_closed_loop_report(db, remediation_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
-
-    body = json.loads(content)
-
-    report = Report(
-        vulnerability_id=remediation.vulnerability_id,
-        report_type="closed_loop",
-        title=body.get("title", f"Closed-Loop Report: Remediation {remediation_id}"),
-        content=content,
-        format="json",
-        metadata_json={"remediation_id": remediation_id},
-    )
-    db.add(report)
-    db.commit()
-    db.refresh(report)
-    logger.info("Generated closed-loop report %s for remediation %s", report.id, remediation_id)
-    return report
 
 
 @router.post("/", response_model=ReportResponse)
