@@ -2,6 +2,7 @@
 Tests for services/approval/workflow.py against a real in-memory DB.
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -18,13 +19,16 @@ from database.base import Base
 from database.models.approval import Approval
 from database.models.asset import Asset
 from database.models.recommendation import Recommendation
+from database.models.report import Report
 from database.models.remediation import Remediation
 from database.models.twin import Twin
 from database.models.validation import Validation
 from database.models.vulnerability import Vulnerability
 from services.approval import workflow
 from services.approval.workflow import ApprovalWorkflowError
+from services.approval.response_parser import interpret_human_response
 from services.remediation import status as remediation_status
+from services.reporting.workflow_report_service import create_approval_decision_report
 
 engine = create_engine(
     "sqlite://",
@@ -224,6 +228,12 @@ def test_decide_rejected_never_creates_remediation(db):
     remediation_count = db.query(Remediation).count()
     assert remediation_count == 0
 
+    report = create_approval_decision_report(db, decided)
+    content = json.loads(report.content)
+    assert content["findings"]["human_decision"]["status"] == "rejected"
+    assert "remains unresolved" in content["findings"]["outcome"]
+    assert db.query(Report).filter(Report.id == report.id).count() == 1
+
 
 def test_decide_already_decided_approval_raises(db):
     vulnerability, twin, recommendation = _seed(db)
@@ -244,3 +254,18 @@ def test_decide_invalid_status_raises(db):
 
     with pytest.raises(ApprovalWorkflowError, match="approved.*rejected"):
         workflow.decide(db, approval_id=approval.id, decision="maybe", decided_by="lead")
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        ("Yes, proceed with the recommendation.", "approved"),
+        ("I approve because the report supports these changes.", "approved"),
+        ("No, leave the finding unresolved.", "rejected"),
+        ("I do not approve because the impact is unverified.", "rejected"),
+        ("Please change the proposal to restrict FTP access.", "revision_requested"),
+        ("I need more information.", "unclear"),
+    ],
+)
+def test_interpret_human_response(response, expected):
+    assert interpret_human_response(response) == expected
