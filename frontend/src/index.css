@@ -1,0 +1,92 @@
+@import "tailwindcss";
+
+/*
+  AutoSecTwin "Security Operations Command Center" theme.
+  Original design: a futuristic station interior, not a copy of any
+  existing game's assets or UI chrome -- dark surfaces, neon accent
+  colors, glowing borders on interactive "mission" cards.
+*/
+@theme {
+  --color-station-void: #06070d;
+  --color-station-hull: #0b0e1a;
+  --color-station-panel: #10152a;
+  --color-station-panel-raised: #161c38;
+  --color-station-border: #232b4d;
+
+  --color-neon-cyan: #35e7ff;
+  --color-neon-blue: #4d7cff;
+  --color-neon-purple: #a06bff;
+
+  --color-alert-critical: #ff4d5e;
+  --color-alert-warning: #ffb547;
+  --color-verified-green: #37d67a;
+
+  --color-text-primary: #e8ecff;
+  --color-text-muted: #8a93bf;
+
+  --font-display: "Orbitron", "Rajdhani", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Rajdhani", ui-sans-serif, system-ui, sans-serif;
+}
+
+@layer base {
+  html, body, #root {
+    height: 100%;
+  }
+
+  body {
+    background-color: var(--color-station-void);
+    background-image:
+      radial-gradient(ellipse 80% 50% at 20% -10%, rgba(77, 124, 255, 0.18), transparent),
+      radial-gradient(ellipse 60% 40% at 90% 10%, rgba(160, 107, 255, 0.12), transparent),
+      repeating-linear-gradient(0deg, rgba(255,255,255,0.015) 0px, transparent 1px, transparent 2px);
+    color: var(--color-text-primary);
+    font-family: var(--font-body);
+  }
+
+  h1, h2, h3, .font-display {
+    font-family: var(--font-display);
+    letter-spacing: 0.02em;
+  }
+
+  ::selection {
+    background: var(--color-neon-cyan);
+    color: var(--color-station-void);
+  }
+}
+
+@layer components {
+  .panel {
+    background: color-mix(in oklab, var(--color-station-panel) 92%, transparent);
+    border: 1px solid var(--color-station-border);
+    border-radius: 0.75rem;
+    backdrop-filter: blur(6px);
+  }
+
+  .panel-glow {
+    box-shadow: 0 0 0 1px rgba(53, 231, 255, 0.08), 0 8px 30px -12px rgba(53, 231, 255, 0.25);
+  }
+
+  .scan-line {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .scan-line::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent, rgba(53, 231, 255, 0.5), transparent);
+    width: 40%;
+    animation: scan 2.2s linear infinite;
+  }
+
+  @keyframes scan {
+    0% { transform: translateX(-120%); }
+    100% { transform: translateX(260%); }
+  }
+
+  @keyframes pulse-glow {
+    0%, 100% { opacity: 0.6; }
+    50% { opacity: 1; }
+  }
+}
