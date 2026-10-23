@@ -1,0 +1,37 @@
+﻿{
+    "Target":  "http://127.0.0.1:3000",
+    "CheckedAtUtc":  "2026-10-13T05:34:21.0777450Z",
+    "HttpStatus":  200,
+    "Headers":  [
+                    {
+                        "Header":  "Content-Security-Policy",
+                        "Present":  false,
+                        "Value":  "MISSING"
+                    },
+                    {
+                        "Header":  "Strict-Transport-Security",
+                        "Present":  false,
+                        "Value":  "MISSING"
+                    },
+                    {
+                        "Header":  "X-Content-Type-Options",
+                        "Present":  true,
+                        "Value":  "nosniff"
+                    },
+                    {
+                        "Header":  "X-Frame-Options",
+                        "Present":  true,
+                        "Value":  "SAMEORIGIN"
+                    },
+                    {
+                        "Header":  "Referrer-Policy",
+                        "Present":  false,
+                        "Value":  "MISSING"
+                    },
+                    {
+                        "Header":  "Permissions-Policy",
+                        "Present":  false,
+                        "Value":  "MISSING"
+                    }
+                ]
+}
